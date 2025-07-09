@@ -101,8 +101,17 @@ class Enhanced_ML_MA43200_Buffer_Strategy(IStrategy):
     timeframe = '1m'
     startup_candle_count: int = 0
 
-    minimal_roi = {"0": 0.01}
+    # ROI table:
+    minimal_roi = {
+        "0": 0.01
+    }
+
+    # Stoploss:
     stoploss = -0.005
+
+    # Trailing Stoploss
+    trailing_stop = False
+    
     can_short = True
     position_adjustment_enable = False
     use_exit_signal = False
@@ -219,7 +228,12 @@ class Enhanced_ML_MA43200_Buffer_Strategy(IStrategy):
         return dataframe
      
     def populate_exit_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
-        dataframe['exit_long'], dataframe['exit_short'] = 0, 0
+        """
+        Wyłącza niestandardowe sygnały wyjścia. Strategia opiera się wyłącznie na
+        wbudowanych mechanizmach ROI i stop-loss dla maksymalnej wydajności.
+        """
+        dataframe['exit_long'] = 0
+        dataframe['exit_short'] = 0
         return dataframe
 
     def _normalize_pair_name(self, pair: str) -> str:
