@@ -1,0 +1,37 @@
+{
+    "max_open_trades": 25,
+    "stake_currency": "USDT",
+    "stake_amount": 100,
+    "timeframe": "1m",
+    "dry_run": true,
+    "dry_run_wallet": 10000,
+    "trading_mode": "futures",
+    "margin_mode": "isolated",
+    
+    "position_stacking": true,
+    "max_positions_per_pair": 5,
+    
+    "exchange": {
+        "name": "binanceusdm",
+        "key": "",
+        "secret": "",
+        "pair_whitelist": [
+            "BTC/USDT:USDT"
+        ]
+    },
+    "pairlists": [{"method": "StaticPairList"}],
+    
+    "strategy": "Enhanced_ML_MA43200_Buffer_Strategy",
+    "startup_candle_count": 1440,
+    
+    "ml_config": {
+        "confidence_threshold_short": 0.42,
+        "confidence_threshold_long": 0.42,
+        "confidence_threshold_hold": 0.30
+    },
+    
+    "Enhanced_ML_MA43200_Buffer_Strategy": {
+        "mode": "backtest",
+        "backtest_timerange": "20241220-20250530"
+    }
+} 

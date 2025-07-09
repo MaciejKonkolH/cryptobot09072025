@@ -1,0 +1,59 @@
+{
+  "version": "1.0.0",
+  "description": "Multi-pair configuration for Enhanced ML Strategy v2.1 with new inputs/ structure",
+  "last_updated": "2025-01-27",
+  
+  "active_pairs": [
+    "BTC/USDT"
+  ],
+  
+  "pair_settings": {
+    "BTC/USDT": {
+      "enabled": true,
+      "model_dir": "BTC_USDT_USDT",
+      "priority": 1,
+      "risk_multiplier": 1.0
+    },
+    "ETH/USDT": {
+      "enabled": false,
+      "model_dir": "ETHUSDT",
+      "priority": 2,
+      "risk_multiplier": 0.8
+    },
+    "ADA/USDT": {
+      "enabled": false,
+      "model_dir": "ADAUSDT",
+      "priority": 3,
+      "risk_multiplier": 0.6
+    }
+  },
+  
+  "global_settings": {
+    "max_active_pairs": 3,
+    "enable_error_recovery": true,
+    "retry_failed_models": true,
+    "retry_interval_minutes": 60,
+    "fallback_to_technical_only": false
+  },
+  
+  "model_requirements": {
+    "min_f1_score": 0.15,
+    "required_files": [
+      "best_model.keras",
+      "scaler.pkl",
+      "metadata.json"
+    ],
+    "min_window_size": 60,
+    "max_window_size": 240
+  },
+  
+  "new_structure_info": {
+    "base_path": "user_data/strategies/inputs/",
+    "directory_format": "{PAIR_NO_SLASH}",
+    "example_paths": [
+      "user_data/strategies/inputs/BTCUSDT/best_model.keras",
+      "user_data/strategies/inputs/BTCUSDT/scaler.pkl",
+      "user_data/strategies/inputs/BTCUSDT/metadata.json"
+    ]
+  }
+} 
