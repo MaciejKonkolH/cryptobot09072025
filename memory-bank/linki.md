@@ -1,0 +1,1 @@
+https://developers.coindesk.com/documentation/data-api/futures_v2_historical_orderbook_l2_snapshots_minute
