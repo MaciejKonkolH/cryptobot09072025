@@ -29,9 +29,9 @@ FUTURE_WINDOW_MINUTES = 120 # Horyzont czasowy (w minutach) do sprawdzania TP/SL
 # Każda para będzie generować osobne kolumny etykiet
 # DOSTOSOWANE do rzeczywistej zmienności danych (~0.4% dziennie)
 TP_SL_LEVELS = [
-    [0.2, 0.1],    # TP: 0.2% (~135 pkt), SL: 0.1% (~67 pkt)
-    [0.15, 0.075], # TP: 0.15% (~100 pkt), SL: 0.075% (~50 pkt)
-    [0.1, 0.05]    # TP: 0.1% (~67 pkt), SL: 0.05% (~33 pkt)
+    [0.8, 0.4],    # TP: 0.2% (~135 pkt), SL: 0.1% (~67 pkt)
+    [0.6, 0.3], # TP: 0.15% (~100 pkt), SL: 0.075% (~50 pkt)
+    [0.4, 0.2]    # TP: 0.1% (~67 pkt), SL: 0.05% (~33 pkt)
 ]
 
 # Stare parametry - zachowane dla kompatybilności wstecznej (używany pierwszy poziom)

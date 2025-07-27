@@ -88,6 +88,32 @@ class Trainer:
         logger.info(">>> KROK 2: Chronologiczny Podział na Zbiory <<<")
         self._split_data(df)
 
+        # DIAGNOSTYKA: Sprawdź które cechy zawierają infinity
+        logger.info("DIAGNOSTYKA INFINITY:")
+        inf_mask = np.isinf(self.X_train)
+        if inf_mask.any().any():  # Naprawka: .any() dla DataFrame
+            inf_columns = self.X_train.columns[inf_mask.any(axis=0)]
+            logger.error(f"Znaleziono {inf_mask.sum().sum()} wartości infinity")
+            logger.error(f"Kolumny z inf: {list(inf_columns)}")
+            
+            # Sprawdź każdą kolumnę z inf
+            for col in inf_columns:
+                inf_count = inf_mask[col].sum()
+                logger.error(f"  {col}: {inf_count} wartości inf")
+                
+                # Pokaż przykładowe wartości
+                sample_values = self.X_train[col].head(10)
+                logger.error(f"    Przykładowe wartości: {sample_values.values}")
+        else:
+            logger.info("Brak wartości infinity w danych")
+        
+        # Sprawdź też NaN
+        nan_mask = np.isnan(self.X_train)
+        if nan_mask.any().any():  # Naprawka: .any() dla DataFrame
+            nan_columns = self.X_train.columns[nan_mask.any(axis=0)]
+            logger.error(f"Znaleziono {nan_mask.sum().sum()} wartości NaN")
+            logger.error(f"Kolumny z NaN: {list(nan_columns)}")
+        
         logger.info(">>> KROK 3: Skalowanie Cech <<<")
         self._scale_features()
 
@@ -178,33 +204,44 @@ class Trainer:
             logger.info(f"Zakodowane klasy: {encoded_unique} (oczekiwane: {np.arange(len(encoded_unique))})")
             assert np.array_equal(encoded_unique, np.arange(len(encoded_unique))), f"Błąd kodowania dla poziomu {i}"
 
-        # Użyj stratyfikowanego podziału na podstawie pierwszej kolumny etykiet
-        # (to zapewni lepszą reprezentację klas)
-        logger.info("Używam stratyfikowanego podziału danych zamiast chronologicznego...")
+        # NAPRAWKA: Używam chronologicznego podziału zamiast stratyfikowanego
+        logger.info("Używam chronologicznego podziału danych zamiast stratyfikowanego...")
         
-        # Pierwszy podział: train+val vs test
-        X_temp, self.X_test, y_temp, self.y_test = train_test_split(
-            X, y_encoded, 
-            test_size=cfg.TEST_SPLIT, 
-            stratify=y_encoded[:, 0],  # Stratyfikacja na podstawie pierwszego poziomu
-            random_state=42
-        )
+        # Oblicz rozmiary zbiorów
+        total_samples = len(X)
+        train_size = int(0.7 * total_samples)
+        val_size = int(0.15 * total_samples)
         
-        # Drugi podział: train vs val
-        val_size = cfg.VALIDATION_SPLIT / (1 - cfg.TEST_SPLIT)  # Skorygowany rozmiar
-        self.X_train, self.X_val, self.y_train, self.y_val = train_test_split(
-            X_temp, y_temp,
-            test_size=val_size,
-            stratify=y_temp[:, 0],  # Stratyfikacja na podstawie pierwszego poziomu
-            random_state=42
-        )
+        # Chronologiczny podział
+        self.X_train = X.iloc[:train_size]
+        self.X_val = X.iloc[train_size:train_size+val_size]
+        self.X_test = X.iloc[train_size+val_size:]
+        
+        self.y_train = y_encoded[:train_size]
+        self.y_val = y_encoded[train_size:train_size+val_size]
+        self.y_test = y_encoded[train_size+val_size:]
 
-        logger.info(f"Podział danych (stratyfikowany):")
+        logger.info(f"Podział danych (chronologiczny):")
         logger.info(f"  Trening: {len(self.X_train):,} próbek")
         logger.info(f"  Walidacja: {len(self.X_val):,} próbek")
         logger.info(f"  Test: {len(self.X_test):,} próbek")
         logger.info(f"  Wymiary y_train: {self.y_train.shape}")  # (n_samples, 3)
         
+        # DIAGNOSTYKA: Sprawdź chronologię podziału
+        if hasattr(self.X_train, 'index'):
+            logger.info("DIAGNOSTYKA CHRONOLOGII:")
+            logger.info(f"  Train: {self.X_train.index.min()} - {self.X_train.index.max()}")
+            logger.info(f"  Val:   {self.X_val.index.min()} - {self.X_val.index.max()}")
+            logger.info(f"  Test:  {self.X_test.index.min()} - {self.X_test.index.max()}")
+            
+            # Sprawdź czy nie ma overlap
+            if self.X_train.index.max() >= self.X_val.index.min():
+                logger.warning("UWAGA: Overlap między train a val!")
+            if self.X_val.index.max() >= self.X_test.index.min():
+                logger.warning("UWAGA: Overlap między val a test!")
+            if self.X_train.index.max() >= self.X_test.index.min():
+                logger.warning("UWAGA: Overlap między train a test!")
+
         # Sprawdź reprezentację klas w każdym zbiorze dla każdego poziomu
         for i, level_desc in enumerate(cfg.TP_SL_LEVELS_DESC):
             logger.info(f"Rozkład klas w zbiorze treningowym dla {level_desc}:")
@@ -292,7 +329,57 @@ class Trainer:
         for i, (label_col, level_desc) in enumerate(zip(cfg.LABEL_COLUMNS, cfg.TP_SL_LEVELS_DESC)):
             logger.info(f"\n--- Ewaluacja dla poziomu: {level_desc} ---")
             
-            # Predykcja dla tego modelu
+            # === WALIDACJA ===
+            logger.info(f"\n--- WYNIKI WALIDACYJNE dla {level_desc} ---")
+            
+            # Predykcja na zbiorze walidacyjnym
+            y_val_pred_level = self.models[i].predict(self.X_val)
+            y_val_true_level = self.y_val[:, i]
+            
+            # Dekoduj etykiety walidacyjne
+            y_val_true_decoded = self.label_encoders[i].inverse_transform(y_val_true_level)
+            y_val_pred_decoded = self.label_encoders[i].inverse_transform(y_val_pred_level)
+            
+            # Oblicz metryki walidacyjne
+            val_accuracy = accuracy_score(y_val_true_decoded, y_val_pred_decoded)
+            val_conf_matrix = confusion_matrix(y_val_true_decoded, y_val_pred_decoded)
+            
+            logger.info(f"VAL_ACCURACY {level_desc}: {val_accuracy:.4f}")
+            
+            # Wyświetl confusion matrix walidacyjną
+            logger.info(f"CONFUSION MATRIX (WALIDACJA) dla {level_desc}:")
+            logger.info("=" * 60)
+            
+            # Przygotuj etykiety dla confusion matrix
+            unique_classes = self.label_encoders[i].classes_
+            class_labels = [cfg.CLASS_LABELS.get(cls, f'CLASS_{cls}') for cls in unique_classes]
+            
+            # Wyświetl confusion matrix w czytelnym formacie
+            logger.info("Predykcja ->")
+            logger.info("Rzeczywistosc v")
+            logger.info(" " * 15 + " | " + " | ".join(f"{label:>12}" for label in class_labels))
+            logger.info("-" * 60)
+            
+            for j, true_label in enumerate(class_labels):
+                row = val_conf_matrix[j]
+                row_str = f"{true_label:>12} | " + " | ".join(f"{val:>12}" for val in row)
+                logger.info(row_str)
+            
+            logger.info("=" * 60)
+            
+            # Analiza błędów walidacyjnych
+            total_val_samples = val_conf_matrix.sum()
+            correct_val_predictions = val_conf_matrix.diagonal().sum()
+            val_overall_accuracy = correct_val_predictions / total_val_samples
+            
+            logger.info(f"VAL - Całkowita liczba próbek: {total_val_samples}")
+            logger.info(f"VAL - Poprawne predykcje: {correct_val_predictions}")
+            logger.info(f"VAL - Ogólna dokładność: {val_overall_accuracy:.4f}")
+            
+            # === TEST ===
+            logger.info(f"\n--- WYNIKI TESTOWE dla {level_desc} ---")
+            
+            # Predykcja dla tego modelu na zbiorze testowym
             y_pred_level = self.models[i].predict(self.X_test)
             y_true_level = self.y_test[:, i]
             
@@ -301,10 +388,9 @@ class Trainer:
             y_pred_decoded = self.label_encoders[i].inverse_transform(y_pred_level)
             
             # Oblicz metryki na zdekodowanych etykietach
-            accuracy = accuracy_score(y_true_decoded, y_pred_decoded)
+            test_accuracy = accuracy_score(y_true_decoded, y_pred_decoded)
             
             # Przygotuj nazwy klas dla raportu
-            unique_classes = self.label_encoders[i].classes_
             target_names = [cfg.CLASS_LABELS.get(cls, f'CLASS_{cls}') for cls in unique_classes]
             
             class_report = classification_report(
@@ -312,22 +398,67 @@ class Trainer:
                 target_names=target_names,
                 output_dict=True, zero_division=0
             )
-            conf_matrix = confusion_matrix(y_true_decoded, y_pred_decoded)
+            test_conf_matrix = confusion_matrix(y_true_decoded, y_pred_decoded)
             
             # Zapisz wyniki
             self.evaluation_results[label_col] = {
                 'level_desc': level_desc,
-                'accuracy': accuracy,
+                'val_accuracy': val_accuracy,
+                'test_accuracy': test_accuracy,
                 'classification_report': class_report,
-                'confusion_matrix': conf_matrix,
-                'y_true': y_true_decoded,
-                'y_pred': y_pred_decoded,
+                'val_confusion_matrix': val_conf_matrix,
+                'test_confusion_matrix': test_conf_matrix,
+                'y_val_true': y_val_true_decoded,
+                'y_val_pred': y_val_pred_decoded,
+                'y_test_true': y_true_decoded,
+                'y_test_pred': y_pred_decoded,
                 'unique_classes': unique_classes
             }
             
-            logger.info(f"Accuracy {level_desc}: {accuracy:.4f}")
+            logger.info(f"TEST_ACCURACY {level_desc}: {test_accuracy:.4f}")
             
-            # Loguj metryki dla klas PROFIT_SHORT i PROFIT_LONG
+            # Wyświetl confusion matrix testową
+            logger.info(f"CONFUSION MATRIX (TEST) dla {level_desc}:")
+            logger.info("=" * 60)
+            
+            # Wyświetl confusion matrix w czytelnym formacie
+            logger.info("Predykcja ->")
+            logger.info("Rzeczywistosc v")
+            logger.info(" " * 15 + " | " + " | ".join(f"{label:>12}" for label in class_labels))
+            logger.info("-" * 60)
+            
+            for j, true_label in enumerate(class_labels):
+                row = test_conf_matrix[j]
+                row_str = f"{true_label:>12} | " + " | ".join(f"{val:>12}" for val in row)
+                logger.info(row_str)
+            
+            logger.info("=" * 60)
+            
+            # Analiza błędów testowych
+            total_test_samples = test_conf_matrix.sum()
+            correct_test_predictions = test_conf_matrix.diagonal().sum()
+            test_overall_accuracy = correct_test_predictions / total_test_samples
+            
+            logger.info(f"TEST - Całkowita liczba próbek: {total_test_samples}")
+            logger.info(f"TEST - Poprawne predykcje: {correct_test_predictions}")
+            logger.info(f"TEST - Ogólna dokładność: {test_overall_accuracy:.4f}")
+            
+            # Porównanie walidacja vs test
+            logger.info(f"\n--- PORÓWNANIE WALIDACJA vs TEST ---")
+            logger.info(f"VAL_ACCURACY:  {val_accuracy:.4f}")
+            logger.info(f"TEST_ACCURACY: {test_accuracy:.4f}")
+            logger.info(f"RÓŻNICA:       {val_accuracy - test_accuracy:.4f}")
+            
+            if val_accuracy > test_accuracy:
+                logger.info("UWAGA: Val > Test - możliwy overfitting lub data leakage!")
+            elif test_accuracy > val_accuracy:
+                logger.info("UWAGA: Test > Val - nietypowe, sprawdź podział danych!")
+            else:
+                logger.info("OK: Val ≈ Test - dobra generalizacja")
+            
+            logger.info("")
+            
+            # Loguj metryki dla klas PROFIT_SHORT i PROFIT_LONG (test)
             for class_idx in cfg.FOCUS_CLASSES:
                 class_name = cfg.CLASS_LABELS[class_idx]
                 # Sprawdź czy klasa istnieje w tym poziomie
@@ -428,9 +559,11 @@ class Trainer:
         for label_col, results in self.evaluation_results.items():
             json_results[label_col] = {
                 'level_desc': results['level_desc'],
-                'accuracy': float(results['accuracy']),
+                'val_accuracy': float(results['val_accuracy']),
+                'test_accuracy': float(results['test_accuracy']),
                 'classification_report': results['classification_report'],
-                'confusion_matrix': results['confusion_matrix'].tolist()
+                'val_confusion_matrix': results['val_confusion_matrix'].tolist(),
+                'test_confusion_matrix': results['test_confusion_matrix'].tolist()
             }
         
         with open(results_path, 'w') as f:

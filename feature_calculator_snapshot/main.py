@@ -1,13 +1,12 @@
 """
 Moduł do obliczania cech (features) na podstawie danych OHLC + Order Book.
-Obsługuje format JSON z danymi order book i świeczkami OHLC.
+Obsługuje format feather z danymi order book i świeczkami OHLC.
 """
 import logging
 import os
 import sys
 import argparse
-import json
-from typing import List, Optional, Dict, Any
+from typing import Optional
 
 import pandas as pd
 import numpy as np
@@ -57,20 +56,23 @@ class OrderBookFeatureCalculator:
         logger.info(f"Order book history window: {self.history_window}")
 
     def load_data(self, file_path: str) -> Optional[pd.DataFrame]:
-        """Wczytuje i przygotowuje dane wejściowe z pliku JSON."""
+        """Wczytuje i przygotowuje dane wejściowe z pliku feather."""
         logger.info(f"Wczytywanie danych z: {file_path}")
         if not os.path.exists(file_path):
             logger.error(f"Plik wejściowy nie istnieje: {file_path}")
             return None
         
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                json_data = json.load(f)
+            # Wczytaj bezpośrednio z pliku feather
+            df = pd.read_feather(file_path)
             
-            logger.info(f"Wczytano {len(json_data)} wierszy danych z JSON.")
+            logger.info(f"Wczytano {len(df)} wierszy danych z feather.")
             
-            # Konwertuj JSON na DataFrame
-            df = self._json_to_dataframe(json_data)
+            # Ustaw timestamp jako indeks
+            if 'timestamp' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                df.set_index('timestamp', inplace=True)
+                df.sort_index(inplace=True)
             
             logger.info("Dane wczytane i przygotowane pomyślnie.")
             return df
@@ -78,65 +80,16 @@ class OrderBookFeatureCalculator:
             logger.error(f"Wystąpił błąd podczas wczytywania danych: {e}", exc_info=True)
             return None
 
-    def _json_to_dataframe(self, json_data: List[Dict[str, Any]]) -> pd.DataFrame:
-        """Konwertuje dane JSON na DataFrame."""
-        rows = []
-        
-        for item in json_data:
-            # Podstawowe dane OHLCV
-            row = {
-                'timestamp': pd.to_datetime(item['timestamp']),
-                'open': float(item['ohlc']['open']),
-                'high': float(item['ohlc']['high']),
-                'low': float(item['ohlc']['low']),
-                'close': float(item['ohlc']['close']),
-                'volume': float(item['ohlc']['volume']),
-                'data_quality': item['data_quality']
-            }
-            
-            # Dane order book (jeśli dostępne)
-            if item['data_quality'] == 'complete' and 'orderbook' in item:
-                ob = item['orderbook']
-                
-                # Snapshot 1
-                row['snapshot1_timestamp'] = pd.to_datetime(ob['snapshot1']['timestamp'])
-                for level, data in ob['snapshot1']['levels'].items():
-                    row[f'snapshot1_depth_{level}'] = float(data['depth'])
-                    row[f'snapshot1_notional_{level}'] = float(data['notional'])
-                
-                # Snapshot 2
-                row['snapshot2_timestamp'] = pd.to_datetime(ob['snapshot2']['timestamp'])
-                for level, data in ob['snapshot2']['levels'].items():
-                    row[f'snapshot2_depth_{level}'] = float(data['depth'])
-                    row[f'snapshot2_notional_{level}'] = float(data['notional'])
-            else:
-                # Brak danych order book - wypełnij NaN
-                for snapshot in ['snapshot1', 'snapshot2']:
-                    row[f'{snapshot}_timestamp'] = pd.NaT
-                    for level in config.ORDERBOOK_LEVELS:
-                        row[f'{snapshot}_depth_{level}'] = np.nan
-                        row[f'{snapshot}_notional_{level}'] = np.nan
-            
-            rows.append(row)
-        
-        df = pd.DataFrame(rows)
-        df.set_index('timestamp', inplace=True)
-        df.sort_index(inplace=True)
-        
-        logger.info(f"Konwersja JSON -> DataFrame: {len(df)} wierszy")
-        logger.info(f"Wiersze z kompletnymi danymi order book: {(df['data_quality'] == 'complete').sum()}")
-        
-        return df
-
     def calculate_traditional_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Oblicza tradycyjne wskaźniki techniczne (bez order book)."""
         logger.info("Obliczanie tradycyjnych wskaźników technicznych...")
         
         # Grupa B: Zmienność (Volatility)
         logger.info("  -> Obliczanie Wstęg Bollingera...")
+        # Grupa A: Wstęgi Bollingera
         bbands = bta.bollinger_bands(df, 'close', period=20, std_dev=2.0)
-        df['bb_width'] = (bbands['bb_upper'] - bbands['bb_lower']) / bbands['bb_middle']
-        df['bb_position'] = (df['close'] - bbands['bb_lower']) / (bbands['bb_upper'] - bbands['bb_lower'])
+        df['bb_width'] = np.where(bbands['bb_middle'] != 0, (bbands['bb_upper'] - bbands['bb_lower']) / bbands['bb_middle'], 0)
+        df['bb_position'] = np.where((bbands['bb_upper'] - bbands['bb_lower']) != 0, (df['close'] - bbands['bb_lower']) / (bbands['bb_upper'] - bbands['bb_lower']), 0)
         df['bb_position'] = (df['bb_position'] - 0.5) * 2
 
         # Grupa C: Pęd/Siła Ruchu (Momentum)
@@ -158,23 +111,25 @@ class OrderBookFeatureCalculator:
         logger.info("Obliczanie średnich kroczących...")
         for period in self.ma_periods:
             logger.info(f"  -> MA {period}...")
-            df[f'ma_{period}'] = df['close'].rolling(window=period).mean()
+            # NAPRAWKA: Dodaję shift(1) aby używać tylko przeszłości
+            df[f'ma_{period}'] = df['close'].rolling(window=period, min_periods=1).mean().shift(1)
         
         # Cechy stosunkowe
         logger.info("Obliczanie cech stosunkowych...")
-        df['price_to_ma_60'] = df['close'] / df['ma_60']
-        df['price_to_ma_240'] = df['close'] / df['ma_240']
-        df['ma_60_to_ma_240'] = df['ma_60'] / df['ma_240']
-        df['price_to_ma_1440'] = df['close'] / df['ma_1440']
+        df['price_to_ma_60'] = np.where(df['ma_60'] != 0, df['close'] / df['ma_60'], 1)
+        df['price_to_ma_240'] = np.where(df['ma_240'] != 0, df['close'] / df['ma_240'], 1)
+        df['ma_60_to_ma_240'] = np.where(df['ma_240'] != 0, df['ma_60'] / df['ma_240'], 1)
+        df['price_to_ma_1440'] = np.where(df['ma_1440'] != 0, df['close'] / df['ma_1440'], 1)
         
         # Cechy wolumenu
         df['volume_change_norm'] = df['volume'].pct_change().fillna(0)
         
         # Cechy dedykowane
         logger.info("Obliczanie cech dedykowanych...")
-        highest_high_15m = df['high'].rolling(window=15).max()
-        lowest_low_15m = df['low'].rolling(window=15).min()
-        df['whipsaw_range_15m'] = (highest_high_15m - lowest_low_15m) / df['close']
+        # 12. Zakres whipsaw 15-minutowy
+        highest_high_15m = df['high'].rolling(window=15, min_periods=1).max()
+        lowest_low_15m = df['low'].rolling(window=15, min_periods=1).min()
+        df['whipsaw_range_15m'] = np.where(df['close'] != 0, (highest_high_15m - lowest_low_15m) / df['close'], 0)
 
         candle_range = df['high'] - df['low']
         upper_wick = df['high'] - df[['open', 'close']].max(axis=1)
@@ -249,15 +204,16 @@ class OrderBookFeatureCalculator:
         bid_sum_s2 = calc_bid_sum('snapshot2_')
         ask_sum_s2 = calc_ask_sum('snapshot2_')
         
-        df['buy_sell_ratio_s1'] = bid_sum_s1 / ask_sum_s1
-        df['buy_sell_ratio_s2'] = bid_sum_s2 / ask_sum_s2
+        # 3-4. Stosunek kupna/sprzedaży
+        df['buy_sell_ratio_s1'] = np.where(ask_sum_s1 != 0, bid_sum_s1 / ask_sum_s1, 1)
+        df['buy_sell_ratio_s2'] = np.where(ask_sum_s2 != 0, bid_sum_s2 / ask_sum_s2, 1)
         
-        # 3-4. Nierównowaga order book
-        df['imbalance_s1'] = (bid_sum_s1 - ask_sum_s1) / (bid_sum_s1 + ask_sum_s1)
-        df['imbalance_s2'] = (bid_sum_s2 - ask_sum_s2) / (bid_sum_s2 + ask_sum_s2)
+        # 5-6. Imbalans kupna/sprzedaży
+        df['imbalance_s1'] = np.where((bid_sum_s1 + ask_sum_s1) != 0, (bid_sum_s1 - ask_sum_s1) / (bid_sum_s1 + ask_sum_s1), 0)
+        df['imbalance_s2'] = np.where((bid_sum_s2 + ask_sum_s2) != 0, (bid_sum_s2 - ask_sum_s2) / (bid_sum_s2 + ask_sum_s2), 0)
         
-        # 5. Zmiana presji między snapshotami
-        df['pressure_change'] = (df['buy_sell_ratio_s2'] - df['buy_sell_ratio_s1']) / df['buy_sell_ratio_s1']
+        # 7. Zmiana presji między snapshotami
+        df['pressure_change'] = np.where(df['buy_sell_ratio_s1'] != 0, (df['buy_sell_ratio_s2'] - df['buy_sell_ratio_s1']) / df['buy_sell_ratio_s1'], 0)
         
         return df
 
@@ -268,10 +224,8 @@ class OrderBookFeatureCalculator:
         df['tp_1pct_depth_s1'] = df['snapshot1_depth_1']
         df['tp_2pct_depth_s1'] = df['snapshot1_depth_2']
         df['sl_1pct_depth_s1'] = df['snapshot1_depth_-1']
-        
-        # 9-10. Stosunki TP do SL
-        df['tp_sl_ratio_1pct'] = df['snapshot1_depth_1'] / df['snapshot1_depth_-1']
-        df['tp_sl_ratio_2pct'] = df['snapshot1_depth_2'] / df['snapshot1_depth_-2']
+        df['tp_sl_ratio_1pct'] = np.where(df['snapshot1_depth_-1'] != 0, df['snapshot1_depth_1'] / df['snapshot1_depth_-1'], 1)
+        df['tp_sl_ratio_2pct'] = np.where(df['snapshot1_depth_-2'] != 0, df['snapshot1_depth_2'] / df['snapshot1_depth_-2'], 1)
         
         return df
 
@@ -291,14 +245,14 @@ class OrderBookFeatureCalculator:
         total_notional_s2 = calc_total_notional('snapshot2_')
         
         # 11. Zmiana głębokości totalnej
-        df['total_depth_change'] = (total_depth_s2 - total_depth_s1) / total_depth_s1
+        df['total_depth_change'] = np.where(total_depth_s1 != 0, (total_depth_s2 - total_depth_s1) / total_depth_s1, 0)
         
         # 12. Zmiana wartości nominalnej
-        df['notional_change'] = (total_notional_s2 - total_notional_s1) / total_notional_s1
+        df['notional_change'] = np.where(total_notional_s1 != 0, (total_notional_s2 - total_notional_s1) / total_notional_s1, 0)
         
         # 13-14. Zmiany głębokości na poziomach +1/-1
-        df['depth_1_change'] = (df['snapshot2_depth_1'] - df['snapshot1_depth_1']) / df['snapshot1_depth_1']
-        df['depth_neg1_change'] = (df['snapshot2_depth_-1'] - df['snapshot1_depth_-1']) / df['snapshot1_depth_-1']
+        df['depth_1_change'] = np.where(df['snapshot1_depth_1'] != 0, (df['snapshot2_depth_1'] - df['snapshot1_depth_1']) / df['snapshot1_depth_1'], 0)
+        df['depth_neg1_change'] = np.where(df['snapshot1_depth_-1'] != 0, (df['snapshot2_depth_-1'] - df['snapshot1_depth_-1']) / df['snapshot1_depth_-1'], 0)
         
         return df
 
@@ -312,30 +266,37 @@ class OrderBookFeatureCalculator:
         total_depth = calc_total_depth_series()
         
         # 15. Trend głębokości totalnej
-        df['depth_trend'] = total_depth.rolling(window=self.history_window).apply(
+        df['depth_trend'] = total_depth.rolling(window=self.history_window, min_periods=1).apply(
             lambda x: stats.linregress(range(len(x)), x)[0] if len(x) == self.history_window else np.nan
-        )
+        ).shift(1)
         
         # 16. Volatilność order book
-        df['ob_volatility'] = total_depth.pct_change().rolling(window=self.history_window).std()
+        df['ob_volatility'] = total_depth.pct_change().rolling(window=self.history_window, min_periods=1).std().shift(1)
         
         # 17. Średnia głębokość historyczna
-        df['avg_depth_30'] = total_depth.rolling(window=self.history_window).mean()
+        df['avg_depth_30'] = total_depth.rolling(window=self.history_window, min_periods=1).mean().shift(1)
         
         # 18. Anomalia głębokości
-        rolling_std = total_depth.rolling(window=self.history_window).std()
-        df['depth_anomaly'] = (total_depth - df['avg_depth_30']) / rolling_std
+        rolling_std = total_depth.rolling(window=self.history_window, min_periods=1).std().shift(1)
+        df['avg_depth_30_shifted'] = total_depth.rolling(window=self.history_window, min_periods=1).mean().shift(1)
+        # NAPRAWKA: Dodaję lepsze zabezpieczenie przed bardzo małymi wartościami
+        df['depth_anomaly'] = np.where(
+            (rolling_std > 1e-10) & (rolling_std != 0),  # Sprawdź czy nie jest zbyt małe
+            (total_depth - df['avg_depth_30_shifted']) / rolling_std,
+            0
+        )
+        df.drop(columns=['avg_depth_30_shifted'], inplace=True)
         
         # 19-20. Trendy presji kupna/sprzedaży
         buy_pressure = sum(df[f'snapshot1_depth_{level}'] for level in config.BID_LEVELS)
         sell_pressure = sum(df[f'snapshot1_depth_{level}'] for level in config.ASK_LEVELS)
         
-        df['buy_pressure_trend'] = buy_pressure.rolling(window=self.history_window).apply(
+        df['buy_pressure_trend'] = buy_pressure.rolling(window=self.history_window, min_periods=1).apply(
             lambda x: stats.linregress(range(len(x)), x)[0] if len(x) == self.history_window else np.nan
-        )
-        df['sell_pressure_trend'] = sell_pressure.rolling(window=self.history_window).apply(
+        ).shift(1)
+        df['sell_pressure_trend'] = sell_pressure.rolling(window=self.history_window, min_periods=1).apply(
             lambda x: stats.linregress(range(len(x)), x)[0] if len(x) == self.history_window else np.nan
-        )
+        ).shift(1)
         
         return df
 
@@ -345,10 +306,14 @@ class OrderBookFeatureCalculator:
         total_depth = sum(df[f'snapshot1_depth_{level}'] for level in config.ORDERBOOK_LEVELS)
         
         # 21. Korelacja głębokości z ceną
-        df['depth_price_corr'] = total_depth.rolling(window=self.history_window).corr(df['close'])
+        depth_price_corr = total_depth.rolling(window=self.history_window, min_periods=1).corr(df['close']).shift(1)
+        # NAPRAWKA: Zastąp inf/NaN wartościami 0
+        df['depth_price_corr'] = depth_price_corr.fillna(0).replace([np.inf, -np.inf], 0)
         
         # 22. Korelacja presji z wolumenem
-        df['pressure_volume_corr'] = df['buy_sell_ratio_s1'].rolling(window=self.history_window).corr(df['volume'])
+        pressure_volume_corr = df['buy_sell_ratio_s1'].rolling(window=self.history_window, min_periods=1).corr(df['volume']).shift(1)
+        # NAPRAWKA: Zastąp inf/NaN wartościami 0
+        df['pressure_volume_corr'] = pressure_volume_corr.fillna(0).replace([np.inf, -np.inf], 0)
         
         return df
 
@@ -362,12 +327,17 @@ class OrderBookFeatureCalculator:
         df['depth_acceleration'] = depth_change.diff()
         
         # 24. Momentum order book
-        df['ob_momentum'] = depth_change.rolling(window=self.momentum_window).mean()
+        df['ob_momentum'] = depth_change.rolling(window=self.momentum_window, min_periods=1).mean().shift(1)
         
         # 25. Breakout signal
-        rolling_max = total_depth.rolling(window=self.history_window).max()
-        rolling_std = total_depth.rolling(window=self.history_window).std()
-        df['breakout_signal'] = (total_depth - rolling_max) / rolling_std
+        rolling_max = total_depth.rolling(window=self.history_window, min_periods=1).max().shift(1)
+        rolling_std = total_depth.rolling(window=self.history_window, min_periods=1).std().shift(1)
+        # NAPRAWKA: Dodaję lepsze zabezpieczenie przed bardzo małymi wartościami
+        df['breakout_signal'] = np.where(
+            (rolling_std > 1e-10) & (rolling_std != 0),  # Sprawdź czy nie jest zbyt małe
+            (total_depth - rolling_max) / rolling_std,
+            0
+        )
         
         return df
 
@@ -383,22 +353,22 @@ class OrderBookFeatureCalculator:
         max_depth = pd.concat(all_depths, axis=1).max(axis=1)
         
         # 26. Koncentracja głębokości
-        df['depth_concentration'] = max_depth / total_depth
+        df['depth_concentration'] = np.where(total_depth != 0, max_depth / total_depth, 0)
         
         # 27. Asymetria poziomów
         near_bid = sum(df[f'snapshot1_depth_{level}'] for level in [-1, -2, -3])
         near_ask = sum(df[f'snapshot1_depth_{level}'] for level in [1, 2, 3])
-        df['level_asymmetry'] = (near_ask - near_bid) / total_depth
+        df['level_asymmetry'] = np.where(total_depth != 0, (near_ask - near_bid) / total_depth, 0)
         
         # 28. Dominacja poziomów bliskich
-        df['near_level_dominance'] = (df['snapshot1_depth_1'] + df['snapshot1_depth_-1']) / total_depth
+        df['near_level_dominance'] = np.where(total_depth != 0, (df['snapshot1_depth_1'] + df['snapshot1_depth_-1']) / total_depth, 0)
         
         # 29. Dominacja poziomów dalekich
-        df['far_level_dominance'] = (df['snapshot1_depth_5'] + df['snapshot1_depth_-5']) / total_depth
+        df['far_level_dominance'] = np.where(total_depth != 0, (df['snapshot1_depth_5'] + df['snapshot1_depth_-5']) / total_depth, 0)
         
         # 30. Stabilność order book
-        depth_changes = total_depth.pct_change().rolling(window=self.short_window).std()
-        df['ob_stability'] = 1 / depth_changes
+        depth_changes = total_depth.pct_change().rolling(window=self.short_window, min_periods=1).std().shift(1)
+        df['ob_stability'] = np.where(depth_changes != 0, 1 / depth_changes, 0)
         
         return df
 
@@ -412,10 +382,22 @@ class OrderBookFeatureCalculator:
         df_adx['minus_dm'] = dm_result['dmn']
 
         alpha = 1 / period
-        df_adx['plus_di'] = 100 * (df_adx['plus_dm'].ewm(alpha=alpha, adjust=False).mean() / df_adx['tr'].ewm(alpha=alpha, adjust=False).mean())
-        df_adx['minus_di'] = 100 * (df_adx['minus_dm'].ewm(alpha=alpha, adjust=False).mean() / df_adx['tr'].ewm(alpha=alpha, adjust=False).mean())
+        df_adx['plus_di'] = 100 * np.where(
+            df_adx['tr'].ewm(alpha=alpha, adjust=False).mean() != 0,
+            df_adx['plus_dm'].ewm(alpha=alpha, adjust=False).mean() / df_adx['tr'].ewm(alpha=alpha, adjust=False).mean(),
+            0
+        )
+        df_adx['minus_di'] = 100 * np.where(
+            df_adx['tr'].ewm(alpha=alpha, adjust=False).mean() != 0,
+            df_adx['minus_dm'].ewm(alpha=alpha, adjust=False).mean() / df_adx['tr'].ewm(alpha=alpha, adjust=False).mean(),
+            0
+        )
 
-        df_adx['dx'] = 100 * (abs(df_adx['plus_di'] - df_adx['minus_di']) / (df_adx['plus_di'] + df_adx['minus_di']))
+        df_adx['dx'] = 100 * np.where(
+            (df_adx['plus_di'] + df_adx['minus_di']) != 0,
+            abs(df_adx['plus_di'] - df_adx['minus_di']) / (df_adx['plus_di'] + df_adx['minus_di']),
+            0
+        )
         adx = df_adx['dx'].ewm(alpha=alpha, adjust=False).mean()
         
         return adx
@@ -429,7 +411,11 @@ class OrderBookFeatureCalculator:
         highest_high = df_chop['high'].rolling(window=period).max()
         lowest_low = df_chop['low'].rolling(window=period).min()
         
-        chop = 100 * np.log10(sum_tr / (highest_high - lowest_low)) / np.log10(period)
+        chop = 100 * np.where(
+            (highest_high - lowest_low) != 0,
+            np.log10(sum_tr / (highest_high - lowest_low)) / np.log10(period),
+            0
+        )
         
         return chop
 
@@ -471,13 +457,13 @@ class OrderBookFeatureCalculator:
                 (df_clean.index < filter_end_dt)
             ].copy()
             
-            logger.info(f"📊 Przed filtrowaniem: {len(df_clean):,} wierszy")
-            logger.info(f"📊 Po filtrowaniu: {len(df_filtered):,} wierszy")
-            logger.info(f"⏰ Zakres wynikowy: {df_filtered.index.min()} do {df_filtered.index.max()}")
+            logger.info(f"STATYSTYKI: Przed filtrowaniem: {len(df_clean):,} wierszy")
+            logger.info(f"STATYSTYKI: Po filtrowaniu: {len(df_filtered):,} wierszy")
+            logger.info(f"CZAS: Zakres wynikowy: {df_filtered.index.min()} do {df_filtered.index.max()}")
             
             df_final = df_filtered
         else:
-            logger.info("⚠️ Brak zakresu użytkownika - zwracam wszystkie dane")
+            logger.info("UWAGA: Brak zakresu użytkownika - zwracam wszystkie dane")
             df_final = df_clean
         
         # Wybierz finalne kolumny
@@ -548,7 +534,7 @@ def main():
         try:
             user_start_dt = pd.to_datetime(args.user_start)
             user_end_dt = pd.to_datetime(args.user_end)
-            logger.info(f"📅 Zakres użytkownika: {user_start_dt} do {user_end_dt}")
+            logger.info(f"DATA: Zakres użytkownika: {user_start_dt} do {user_end_dt}")
         except Exception as e:
             logger.error(f"Błąd parsowania dat użytkownika: {e}")
             sys.exit(1)

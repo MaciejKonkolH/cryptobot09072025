@@ -5,11 +5,15 @@ import pandas as pd
 import json
 from datetime import datetime, timedelta
 import sys
+from pathlib import Path
+import io
+import argparse
+import logging
 
 ORDERBOOK_DIR = "orderbook_raw"
 OHLC_DIR = "ohlc_raw"
-MERGED_FILE = "orderbook_ohlc_merged.feather"
-JSON_FILE = "orderbook_ohlc_merged.json"
+MERGED_FILE = "orderbook_ohlc_merged.feather"  # Tylko feather, bez JSON
+METADATA_FILE = "download_metadata.json"
 
 
 def daterange(start_date, end_date):
@@ -23,10 +27,22 @@ def download_and_extract_orderbook(symbol, date_str, market="futures", out_dir=O
     csv_path = os.path.join(out_dir, f"{symbol}-bookDepth-{date_str}.csv")
     
     try:
-        # Sprawdź czy CSV już istnieje
+        # Sprawdź czy CSV już istnieje i jest kompletny
         if os.path.exists(csv_path):
-            print(f"✅ {date_str}: Order book CSV już istnieje")
-            return csv_path
+            file_size = os.path.getsize(csv_path)
+            if file_size > 1000:  # Sprawdź czy plik ma sensowny rozmiar
+                print(f"✅ {date_str}: Order book CSV już istnieje ({file_size:,} bajtów)")
+                return csv_path
+            else:
+                print(f"⚠️ {date_str}: Order book CSV istnieje ale jest za mały ({file_size} bajtów) - usuwam")
+                os.remove(csv_path)
+        
+        # Plik nie istnieje lokalnie - sprawdź serwer
+        print(f"🔍 {date_str}: Order book nie istnieje lokalnie - sprawdzam serwer...")
+        head_resp = requests.head(url, timeout=10)
+        if head_resp.status_code == 404:
+            print(f"❌ {date_str}: Order book niedostępny na serwerze (404)")
+            return None
         
         # Pobierz ZIP
         resp = requests.get(url, stream=True, timeout=30)
@@ -47,10 +63,11 @@ def download_and_extract_orderbook(symbol, date_str, market="futures", out_dir=O
             # Usuń ZIP
             os.remove(zip_path)
             
-            print(f"✅ {date_str}: Order book pobrano i rozpakowano -> {csv_path}")
+            file_size = os.path.getsize(csv_path)
+            print(f"✅ {date_str}: Order book pobrano i rozpakowano -> {csv_path} ({file_size:,} bajtów)")
             return csv_path
         else:
-            print(f"❌ {date_str}: brak order book pliku ({resp.status_code})")
+            print(f"❌ {date_str}: błąd pobierania order book ({resp.status_code})")
             return None
     except Exception as e:
         print(f"❌ {date_str}: błąd pobierania order book: {e}")
@@ -63,10 +80,22 @@ def download_and_extract_ohlc(symbol, date_str, interval="1m", market="futures",
     csv_path = os.path.join(out_dir, f"{symbol}-{interval}-{date_str}.csv")
     
     try:
-        # Sprawdź czy CSV już istnieje
+        # Sprawdź czy CSV już istnieje i jest kompletny
         if os.path.exists(csv_path):
-            print(f"✅ {date_str}: OHLC CSV już istnieje")
-            return csv_path
+            file_size = os.path.getsize(csv_path)
+            if file_size > 1000:  # Sprawdź czy plik ma sensowny rozmiar
+                print(f"✅ {date_str}: OHLC CSV już istnieje ({file_size:,} bajtów)")
+                return csv_path
+            else:
+                print(f"⚠️ {date_str}: OHLC CSV istnieje ale jest za mały ({file_size} bajtów) - usuwam")
+                os.remove(csv_path)
+        
+        # TYLKO jeśli plik nie istnieje lokalnie - sprawdź serwer
+        print(f"🔍 {date_str}: OHLC nie istnieje lokalnie - sprawdzam serwer...")
+        head_resp = requests.head(url, timeout=10)
+        if head_resp.status_code == 404:
+            print(f"❌ {date_str}: OHLC niedostępny na serwerze (404)")
+            return None
         
         # Pobierz ZIP
         resp = requests.get(url, stream=True, timeout=30)
@@ -87,10 +116,11 @@ def download_and_extract_ohlc(symbol, date_str, interval="1m", market="futures",
             # Usuń ZIP
             os.remove(zip_path)
             
-            print(f"✅ {date_str}: OHLC pobrano i rozpakowano -> {csv_path}")
+            file_size = os.path.getsize(csv_path)
+            print(f"✅ {date_str}: OHLC pobrano i rozpakowano -> {csv_path} ({file_size:,} bajtów)")
             return csv_path
         else:
-            print(f"❌ {date_str}: brak OHLC pliku ({resp.status_code})")
+            print(f"❌ {date_str}: błąd pobierania OHLC ({resp.status_code})")
             return None
     except Exception as e:
         print(f"❌ {date_str}: błąd pobierania OHLC: {e}")
@@ -183,21 +213,39 @@ def process_snapshots_for_candle(ohlc_timestamp, wide_orderbook_df):
     Przetwarza snapshoty order book dla jednej świeczki OHLC
     Zwraca 2 snapshoty (lub None jeśli nie można utworzyć)
     """
-    window_start = ohlc_timestamp - pd.Timedelta(seconds=60)
-    window_end = ohlc_timestamp
+    # OHLC timestamp to początek świeczki (np. 00:04:00)
+    # Szukamy snapshotów w trakcie świeczki (00:04:00 - 00:05:00)
+    window_start = ohlc_timestamp
+    window_end = ohlc_timestamp + pd.Timedelta(minutes=1)
     
-    # Znajdź snapshoty w oknie -60 do 0 sekund
+    # DEBUG: Sprawdź pierwsze kilka wywołań
+    if ohlc_timestamp.hour == 0 and ohlc_timestamp.minute <= 5:
+        print(f"DEBUG: process_snapshots_for_candle dla {ohlc_timestamp}")
+        print(f"DEBUG: window_start = {window_start}, window_end = {window_end}")
+        print(f"DEBUG: wide_orderbook_df.index.min() = {wide_orderbook_df.index.min()}")
+        print(f"DEBUG: wide_orderbook_df.index.max() = {wide_orderbook_df.index.max()}")
+        print(f"DEBUG: Snapshoty w wide_orderbook_df:")
+        for i, idx in enumerate(wide_orderbook_df.index[:10]):
+            print(f"  {i}: {idx}")
+    
+    # Znajdź snapshoty w oknie świeczki (00:04:00 - 00:05:00)
     relevant_orderbook = wide_orderbook_df[
-        (wide_orderbook_df['timestamp'] >= window_start) &
-        (wide_orderbook_df['timestamp'] < window_end)
-    ].sort_values('timestamp')
+        (wide_orderbook_df.index >= window_start) &
+        (wide_orderbook_df.index < window_end)
+    ].sort_index()
+    
+    # DEBUG: Sprawdź pierwsze kilka wywołań
+    if ohlc_timestamp.hour == 0 and ohlc_timestamp.minute <= 5:
+        print(f"DEBUG: Znaleziono {len(relevant_orderbook)} snapshotów w oknie")
+        for i, idx in enumerate(relevant_orderbook.index):
+            print(f"  {i}: {idx}")
     
     snapshot_count = len(relevant_orderbook)
     
     if snapshot_count == 0:
         # Znajdź najbliższe snapshoty przed i po oknie
-        before_window = wide_orderbook_df[wide_orderbook_df['timestamp'] < window_start].sort_values('timestamp')
-        after_window = wide_orderbook_df[wide_orderbook_df['timestamp'] >= window_end].sort_values('timestamp')
+        before_window = wide_orderbook_df[wide_orderbook_df.index < window_start].sort_index()
+        after_window = wide_orderbook_df[wide_orderbook_df.index >= window_end].sort_index()
         
         if len(before_window) > 0 and len(after_window) > 0:
             # Interpoluj między snapshotami przed i po oknie
@@ -215,12 +263,12 @@ def process_snapshots_for_candle(ohlc_timestamp, wide_orderbook_df):
     elif snapshot_count == 1:
         # Sprawdź odległość od końca okna
         single_snapshot = relevant_orderbook.iloc[0]
-        distance_to_end = (window_end - single_snapshot['timestamp']).total_seconds()
+        distance_to_end = (window_end - single_snapshot.name).total_seconds()
         
         if distance_to_end < 30:
             # Snapshot jest bliżej niż 30 sekund od końca okna
             # Znajdź snapshot przed oknem
-            before_window = wide_orderbook_df[wide_orderbook_df['timestamp'] < window_start].sort_values('timestamp')
+            before_window = wide_orderbook_df[wide_orderbook_df.index < window_start].sort_index()
             
             if len(before_window) > 0:
                 before_snapshot = before_window.iloc[-1]
@@ -232,7 +280,7 @@ def process_snapshots_for_candle(ohlc_timestamp, wide_orderbook_df):
         else:
             # Snapshot jest dalej niż 30 sekund od końca okna
             # Znajdź snapshot po oknie
-            after_window = wide_orderbook_df[wide_orderbook_df['timestamp'] >= window_end].sort_values('timestamp')
+            after_window = wide_orderbook_df[wide_orderbook_df.index >= window_end].sort_index()
             
             if len(after_window) > 0:
                 after_snapshot = after_window.iloc[0]
@@ -279,284 +327,477 @@ def interpolate_snapshots(snapshot1, snapshot2, ratio):
     
     return interpolated
 
-def save_to_json(merged_df, output_file=JSON_FILE):
-    """Zapisuje dane do pliku JSON z formatowaniem"""
-    print(f"\n💾 Zapisuję dane do {output_file}...")
+def check_existing_data_range(start_date, end_date, symbol="BTCUSDT"):
+    """Sprawdza czy dane z zakresu już istnieją i zwraca brakujące fragmenty"""
+    print(f"🔍 Sprawdzam istniejące dane dla zakresu: {start_date} - {end_date}")
     
-    # Konwertuj DataFrame na listę słowników
-    json_data = []
-    total_rows = len(merged_df)
-    
-    for i, (_, row) in enumerate(merged_df.iterrows()):
-        if i % 1000 == 0 or i == total_rows - 1:
-            progress = (i + 1) / total_rows * 100
-            print(f"🔄 Konwersja do JSON: {i+1}/{total_rows} ({progress:.1f}%)")
-        
-        # Stwórz strukturę dla jednego wiersza
-        candle_data = {
-            "timestamp": row['timestamp'].isoformat(),
-            "ohlc": {
-                "open": float(row['open']),
-                "high": float(row['high']),
-                "low": float(row['low']),
-                "close": float(row['close']),
-                "volume": float(row['volume'])
-            },
-            "data_quality": row['data_quality']
-        }
-        
-        # Dodaj dane order book jeśli są dostępne
-        if row['data_quality'] == 'complete':
-            candle_data["orderbook"] = {
-                "snapshot1": {
-                    "timestamp": row['snapshot1_timestamp'].isoformat(),
-                    "levels": {}
-                },
-                "snapshot2": {
-                    "timestamp": row['snapshot2_timestamp'].isoformat(),
-                    "levels": {}
-                }
-            }
-            
-            # Dodaj poziomy order book dla obu snapshotów
-            for i in range(-5, 6):
-                if i == 0:
-                    continue
+    # Sprawdź czy plik merged już istnieje
+    if os.path.exists(MERGED_FILE):
+        try:
+            # Sprawdź metadata
+            if os.path.exists(METADATA_FILE):
+                with open(METADATA_FILE, 'r') as f:
+                    metadata = json.load(f)
                 
-                level_key = str(i)
-                candle_data["orderbook"]["snapshot1"]["levels"][level_key] = {
-                    "depth": float(row[f'snapshot1_depth_{i}']),
-                    "notional": float(row[f'snapshot1_notional_{i}'])
-                }
-                candle_data["orderbook"]["snapshot2"]["levels"][level_key] = {
-                    "depth": float(row[f'snapshot2_depth_{i}']),
-                    "notional": float(row[f'snapshot2_notional_{i}'])
-                }
-        
-        json_data.append(candle_data)
+                existing_start = datetime.fromisoformat(metadata['start_date'])
+                existing_end = datetime.fromisoformat(metadata['end_date'])
+                
+                # Sprawdź czy zakres jest kompletny
+                if existing_start <= start_date and existing_end >= end_date:
+                    print(f"✅ Dane z zakresu {start_date} - {end_date} już istnieją!")
+                    print(f"   Istniejący zakres: {existing_start} - {existing_end}")
+                    return True, []
+                else:
+                    print(f"⚠️ Istnieją dane, ale zakres nie jest kompletny")
+                    print(f"   Istniejący: {existing_start} - {existing_end}")
+                    print(f"   Wymagany: {start_date} - {end_date}")
+                    
+                    # Znajdź brakujące fragmenty
+                    missing_ranges = []
+                    if start_date < existing_start:
+                        missing_ranges.append((start_date, existing_start - timedelta(days=1)))
+                    if end_date > existing_end:
+                        missing_ranges.append((existing_end + timedelta(days=1), end_date))
+                    
+                    return False, missing_ranges
+            else:
+                print(f"⚠️ Plik merged istnieje, ale brak metadata")
+                return False, [(start_date, end_date)]
+        except Exception as e:
+            print(f"⚠️ Błąd sprawdzania metadata: {e}")
+            return False, [(start_date, end_date)]
     
-    # Zapisz do pliku JSON z formatowaniem
-    print("💾 Zapisuję do pliku JSON...")
-    with open(output_file, 'w', encoding='utf-8') as f:
-        json.dump(json_data, f, indent=2, ensure_ascii=False)
-    
-    print(f"✅ Zapisano {len(json_data)} świeczek do {output_file}")
+    print(f"❌ Brak istniejących danych - pobieram cały zakres")
+    return False, [(start_date, end_date)]
 
-def merge_orderbook_with_ohlc(orderbook_df, ohlc_df, save_json=False):
-    """Łączy dane order book z OHLC - zapisuje WSZYSTKIE dane bez filtrowania"""
-    print(f"\n🔗 Łączę order book z OHLC...")
-    print(f"📊 Dane OHLC: {len(ohlc_df)} wierszy (z rozszerzonym zakresem)")
-    print(f"📊 Dane Order Book: {len(orderbook_df)} wierszy (z rozszerzonym zakresem)")
+def save_metadata(start_date, end_date, symbol="BTCUSDT"):
+    """Zapisuje metadata o pobranych danych"""
+    metadata = {
+        'symbol': symbol,
+        'start_date': start_date.isoformat(),
+        'end_date': end_date.isoformat(),
+        'created_at': datetime.now().isoformat(),
+        'file_format': 'feather'
+    }
     
-    # Konwertuj order book na wide format (jeden wiersz na timestamp)
-    print("Przekształcam order book na wide format...")
+    with open(METADATA_FILE, 'w') as f:
+        json.dump(metadata, f, indent=2)
     
-    unique_timestamps = orderbook_df['timestamp'].unique()
-    total_timestamps = len(unique_timestamps)
-    print(f"📊 Przetwarzam {total_timestamps} unikalnych timestampów order book...")
+    print(f"💾 Metadata zapisana: {METADATA_FILE}")
+
+def merge_orderbook_with_ohlc(orderbook_df, ohlc_df, save_json=False, extra_month_for_ma=False):
+    """ZOPTYMALIZOWANA wersja łączenia order book z OHLC - TYLKO WSPÓLNE DANE"""
+    print(f"\n🔗 Łączę order book z OHLC (ZOPTYMALIZOWANE)...")
+    print(f"📊 Dane OHLC: {len(ohlc_df)} wierszy")
+    print(f"📊 Dane Order Book: {len(orderbook_df)} wierszy")
     
-    wide_orderbook = []
-    for i, timestamp in enumerate(unique_timestamps):
-        if i % 1000 == 0 or i == total_timestamps - 1:
-            progress = (i + 1) / total_timestamps * 100
-            print(f"🔄 Postęp: {i+1}/{total_timestamps} ({progress:.1f}%)")
+    # KROK 1: Indeksowanie i groupby (ZAMIENIA O(n²) na O(n log n))
+    print("📊 Indeksuję dane order book...")
+    orderbook_df.set_index('timestamp', inplace=True)
+    
+    # KROK 2: Vectorizowane tworzenie wide format
+    print("📊 Tworzę wide format order book (VECTORIZED)...")
+    
+    # Dodaj logi progress
+    total_snapshots = orderbook_df.groupby(level=0).ngroups
+    print(f"📊 Przetwarzam {total_snapshots:,} snapshots order book...")
+    
+    # Zastąp groupby().apply() pętlą z logami postępu
+    wide_orderbook_data = []
+    processed_count = 0
+    
+    for timestamp, group in orderbook_df.groupby(level=0):
+        # Stwórz wiersz dla tego timestampu
+        row_data = {'timestamp': timestamp}
         
-        timestamp_data = orderbook_df[orderbook_df['timestamp'] == timestamp]
+        # Dodaj dane depth i notional dla każdego poziomu
+        for _, snapshot in group.iterrows():
+            row_data[f'depth_{snapshot["percentage"]}'] = snapshot["depth"]
+            row_data[f'notional_{snapshot["percentage"]}'] = snapshot["notional"]
         
-        # Stwórz jeden wiersz z wszystkimi poziomami
-        row = {'timestamp': timestamp}
-        for _, level_data in timestamp_data.iterrows():
-            percentage = level_data['percentage']
-            row[f'depth_{percentage}'] = level_data['depth']
-            row[f'notional_{percentage}'] = level_data['notional']
+        wide_orderbook_data.append(row_data)
+        processed_count += 1
         
-        wide_orderbook.append(row)
+        # Logi postępu co 10,000 snapshots
+        if processed_count % 10000 == 0:
+            progress = (processed_count / total_snapshots) * 100
+            print(f"📊 Postęp: {processed_count:,}/{total_snapshots:,} snapshots ({progress:.1f}%)")
     
-    wide_orderbook_df = pd.DataFrame(wide_orderbook)
-    print(f"Przekształcono na {len(wide_orderbook_df)} unikalnych timestampów order book")
+    print(f"✅ Wide format utworzony: {len(wide_orderbook_data):,} snapshots")
     
-    # Przetwórz każdą świeczkę OHLC
-    print("\n📊 Przetwarzam snapshoty order book dla każdej świeczki OHLC...")
+    # Konwertuj na DataFrame
+    wide_orderbook_df = pd.DataFrame(wide_orderbook_data)
+    wide_orderbook_df.set_index('timestamp', inplace=True)
     
-    processed_data = []
-    stats = {'0_snapshots': 0, '1_snapshot': 0, '2_snapshots': 0, '3_plus_snapshots': 0}
-    total_ohlc = len(ohlc_df)
+    # KROK 4: Znajdź zakres wspólnych danych
+    orderbook_start = wide_orderbook_df.index.min()
+    orderbook_end = wide_orderbook_df.index.max()
+    ohlc_start = ohlc_df.index.min()
+    ohlc_end = ohlc_df.index.max()
     
-    for i, ohlc_row in enumerate(ohlc_df.iterrows()):
-        if i % 1000 == 0 or i == total_ohlc - 1:
-            progress = (i + 1) / total_ohlc * 100
-            print(f"🔄 Przetwarzanie świeczek: {i+1}/{total_ohlc} ({progress:.1f}%)")
+    # Diagnostyka typów
+    print(f"🔍 Diagnostyka typów indeksów:")
+    print(f"   orderbook_start: {type(orderbook_start)} = {orderbook_start}")
+    print(f"   ohlc_start: {type(ohlc_start)} = {ohlc_start}")
+    print(f"   orderbook_end: {type(orderbook_end)} = {orderbook_end}")
+    print(f"   ohlc_end: {type(ohlc_end)} = {ohlc_end}")
+    
+    # Konwertuj na pd.Timestamp jeśli potrzebne
+    if not isinstance(orderbook_start, pd.Timestamp):
+        orderbook_start = pd.Timestamp(orderbook_start)
+    if not isinstance(orderbook_end, pd.Timestamp):
+        orderbook_end = pd.Timestamp(orderbook_end)
+    
+    # OHLC ma RangeIndex - użyj timestamp z kolumny
+    if isinstance(ohlc_start, int):
+        ohlc_start = ohlc_df['timestamp'].min()
+    if isinstance(ohlc_end, int):
+        ohlc_end = ohlc_df['timestamp'].max()
+    
+    if not isinstance(ohlc_start, pd.Timestamp):
+        ohlc_start = pd.Timestamp(ohlc_start)
+    if not isinstance(ohlc_end, pd.Timestamp):
+        ohlc_end = pd.Timestamp(ohlc_end)
+
+    # Oblicz wspólny zakres
+    common_start = max(orderbook_start, ohlc_start)
+    common_end = min(orderbook_end, ohlc_end)
+    
+    print(f"📅 Zakresy danych:")
+    print(f"   OHLC: {ohlc_start} - {ohlc_end}")
+    print(f"   Order Book: {orderbook_start} - {orderbook_end}")
+    print(f"   WSPÓLNY: {common_start} - {common_end}")
+    
+    # KROK 5: Filtruj OHLC do wspólnego zakresu
+    if extra_month_for_ma:
+        # Dodaj 30 dni wcześniej dla MA 43200
+        ma_start = common_start - pd.Timedelta(days=30)
+        print(f"   +30 dni dla MA: {ma_start} - {common_end}")
+        filtered_ohlc = ohlc_df[(ohlc_df['timestamp'] >= ma_start) & (ohlc_df['timestamp'] <= common_end)]
+    else:
+        filtered_ohlc = ohlc_df[(ohlc_df['timestamp'] >= common_start) & (ohlc_df['timestamp'] <= common_end)]
+    
+    print(f"📊 Filtrowane OHLC: {len(filtered_ohlc)} wierszy")
+    
+    # KROK 6: Vectorizowane przetwarzanie OHLC
+    print("📊 Przetwarzam snapshoty dla świeczek OHLC (VECTORIZED)...")
+    
+    def process_candle_vectorized(ohlc_row):
+        """Vectorizowana funkcja przetwarzania jednej świeczki"""
+        ohlc_timestamp = ohlc_row['timestamp']
         
-        ohlc_timestamp = ohlc_row[1]['timestamp']
+        # DEBUG: Sprawdź pierwsze kilka świeczek
+        if processed_count < 5:
+            print(f"DEBUG: Przetwarzam świeczkę {ohlc_timestamp}")
+            print(f"DEBUG: wide_orderbook_df.index.min() = {wide_orderbook_df.index.min()}")
+            print(f"DEBUG: wide_orderbook_df.index.max() = {wide_orderbook_df.index.max()}")
         
-        # Przetwórz snapshoty dla tej świeczki
-        processed_snapshots = process_snapshots_for_candle(ohlc_timestamp, wide_orderbook_df)
+        # Szybki lookup w indeksowanym DataFrame
+        try:
+            # Użyj exclusive end slicing (jak w process_snapshots_for_candle)
+            snapshots = wide_orderbook_df[
+                (wide_orderbook_df.index >= ohlc_timestamp) & 
+                (wide_orderbook_df.index < ohlc_timestamp + pd.Timedelta(minutes=1))
+            ]
+            
+            # DEBUG: Sprawdź pierwsze kilka świeczek
+            if processed_count < 5:
+                print(f"DEBUG: Znaleziono {len(snapshots)} snapshotów dla {ohlc_timestamp}")
+                
+        except KeyError:
+            if processed_count < 5:
+                print(f"DEBUG: KeyError dla {ohlc_timestamp}")
+            return None  # Brak order book - pomijamy ten wiersz
         
-        # Stwórz wiersz z danymi OHLC
+        if len(snapshots) == 0:
+            if processed_count < 5:
+                print(f"DEBUG: Brak snapshotów dla {ohlc_timestamp}")
+            return None  # Brak order book - pomijamy ten wiersz
+        
+        # Przetwórz snapshoty
+        processed_snapshots = process_snapshots_for_candle(ohlc_timestamp, snapshots)
+        
+        # DEBUG: Sprawdź pierwsze kilka świeczek
+        if processed_count < 5:
+            print(f"DEBUG: processed_snapshots = {processed_snapshots}")
+        
+        # Sprawdź czy mamy kompletne dane
+        if not processed_snapshots or len(processed_snapshots) != 2:
+            if processed_count < 5:
+                print(f"DEBUG: Niekompletne dane dla {ohlc_timestamp}")
+            return None  # Niekompletne dane - pomijamy ten wiersz
+        
+        # Stwórz wiersz wynikowy
         merged_row = {
             'timestamp': ohlc_timestamp,
-            'open': ohlc_row[1]['open'],
-            'high': ohlc_row[1]['high'],
-            'low': ohlc_row[1]['low'],
-            'close': ohlc_row[1]['close'],
-            'volume': ohlc_row[1]['volume']
+            'open': ohlc_row['open'],
+            'high': ohlc_row['high'],
+            'low': ohlc_row['low'],
+            'close': ohlc_row['close'],
+            'volume': ohlc_row['volume']
         }
         
-        # Dodaj dane order book
-        if processed_snapshots and len(processed_snapshots) == 2:
-            # Dodaj dane z pierwszego snapshotu
-            for key, value in processed_snapshots[0].items():
-                if key != 'timestamp':
-                    merged_row[f'snapshot1_{key}'] = value
-            
-            # Dodaj dane z drugiego snapshotu
-            for key, value in processed_snapshots[1].items():
-                if key != 'timestamp':
-                    merged_row[f'snapshot2_{key}'] = value
-            
-            # Dodaj informacje o jakości danych
-            merged_row['snapshot1_timestamp'] = processed_snapshots[0]['timestamp']
-            merged_row['snapshot2_timestamp'] = processed_snapshots[1]['timestamp']
-            merged_row['data_quality'] = 'complete'
-        else:
-            # Brak danych order book
-            merged_row['data_quality'] = 'missing'
+        # Dodaj dane z pierwszego snapshotu
+        for key, value in processed_snapshots[0].items():
+            if key != 'timestamp':
+                merged_row[f'snapshot1_{key}'] = value
         
-        processed_data.append(merged_row)
+        # Dodaj dane z drugiego snapshotu
+        for key, value in processed_snapshots[1].items():
+            if key != 'timestamp':
+                merged_row[f'snapshot2_{key}'] = value
         
-        # Aktualizuj statystyki
-        if processed_snapshots is None:
-            stats['0_snapshots'] += 1
-        elif len(processed_snapshots) == 1:
-            stats['1_snapshot'] += 1
-        elif len(processed_snapshots) == 2:
-            stats['2_snapshots'] += 1
-        else:
-            stats['3_plus_snapshots'] += 1
+        # Dodaj informacje o jakości danych
+        merged_row['snapshot1_timestamp'] = processed_snapshots[0]['timestamp']
+        merged_row['snapshot2_timestamp'] = processed_snapshots[1]['timestamp']
+        merged_row['data_quality'] = 'complete'
+        
+        return merged_row
     
-    # Wyświetl statystyki
-    print(f"\n📈 Statystyki przetwarzania (wszystkie dane):")
-    print(f"  Świeczek z 0 snapshotami: {stats['0_snapshots']}")
-    print(f"  Świeczek z 1 snapshotem: {stats['1_snapshot']}")
-    print(f"  Świeczek z 2 snapshotami: {stats['2_snapshots']}")
-    print(f"  Świeczek z 3+ snapshotami: {stats['3_plus_snapshots']}")
+    # KROK 7: Vectorizowane przetwarzanie wszystkich świeczek
+    print("🔄 Przetwarzam wszystkie świeczki OHLC...")
     
-    # Zapisz WSZYSTKIE dane bez filtrowania
-    print("\n💾 Zapisuję dane do pliku...")
+    # Dodaj logi progress
+    total_candles = len(filtered_ohlc)
+    print(f"📊 Przetwarzam {total_candles:,} świeczek OHLC...")
+    
+    # Zastąp apply() pętlą z logami postępu
+    processed_data = []
+    processed_count = 0
+    
+    for index, ohlc_row in filtered_ohlc.iterrows():
+        result = process_candle_vectorized(ohlc_row)
+        if result is not None:
+            processed_data.append(result)
+        
+        processed_count += 1
+        
+        # Logi postępu co 50,000 świeczek
+        if processed_count % 50000 == 0:
+            progress = (processed_count / total_candles) * 100
+            complete_count = len(processed_data)
+            print(f"📊 Postęp: {processed_count:,}/{total_candles:,} świeczek ({progress:.1f}%) - Kompletne: {complete_count:,}")
+    
+    print(f"✅ Przetworzono {len(processed_data):,} świeczek z kompletnymi danymi order book")
+    
+    # KROK 8: Tworzenie finalnego DataFrame
+    print("📊 Tworzę finalny DataFrame...")
     full_merged_df = pd.DataFrame(processed_data)
+    
+    # Statystyki
+    complete_count = len(full_merged_df)
+    total_ohlc = len(filtered_ohlc)
+    coverage = (complete_count / total_ohlc * 100) if total_ohlc > 0 else 0
+    
+    print(f"\n📈 Statystyki przetwarzania (TYLKO WSPÓLNE DANE):")
+    print(f"  Świeczek OHLC w zakresie: {total_ohlc}")
+    print(f"  Świeczek z kompletnymi danymi: {complete_count}")
+    print(f"  Pokrycie: {coverage:.1f}%")
+    print(f"  Zakres wynikowy: {full_merged_df['timestamp'].min()} - {full_merged_df['timestamp'].max()}")
+    
+    # Zapisz tylko feather (szybszy)
+    print(f"\n💾 Zapisuję dane do {MERGED_FILE}...")
     full_merged_df.to_feather(MERGED_FILE)
-    
-    print(f"\n✅ Zapisano WSZYSTKIE dane (bez filtrowania) w {MERGED_FILE}")
-    print(f"📊 Łącznie {len(full_merged_df)} wierszy z pełnym zakresem historycznym")
-    print(f"⏰ Zakres czasowy: {full_merged_df['timestamp'].min()} do {full_merged_df['timestamp'].max()}")
-    
-    # Zapisz do JSON jeśli włączone
-    if save_json:
-        print("💾 Zapisuję do JSON...")
-        save_to_json(full_merged_df)
+    print(f"✅ Dane zapisane pomyślnie do {MERGED_FILE}")
     
     return full_merged_df
 
-def main():
-    if len(sys.argv) < 4:
-        print("Użycie: python download_and_merge_orderbook.py SYMBOL DATA_START DATA_END [--json]")
-        print("Przykład: python download_and_merge_orderbook.py BTCUSDT 2024-06-01 2024-06-10 --json")
-        sys.exit(1)
+def create_missing_orderbook_data(missing_dates, orderbook_dir):
+    """
+    Tworzy brakujące dane order book na podstawie dni sąsiadujących
+    """
+    print(f"🔧 Tworzę brakujące dane order book dla {len(missing_dates)} dni...")
     
-    symbol = sys.argv[1]
-    date_start = sys.argv[2]
-    date_end = sys.argv[3]
-    
-    # Sprawdź flagę --json
-    save_json = '--json' in sys.argv
-    
-    try:
-        # Parsuj daty użytkownika
-        user_start_dt = datetime.strptime(date_start, "%Y-%m-%d")
-        user_end_dt = datetime.strptime(date_end, "%Y-%m-%d")
+    for missing_date in missing_dates:
+        print(f"   📅 Przetwarzam: {missing_date}")
         
-        # Rozszerz zakresy dla pobierania danych historycznych
-        # OHLC: 30 dni + 10 minut wcześniej (dla średnich kroczących + cech snapshotów)
-        ohlc_start_dt = user_start_dt - timedelta(days=30, minutes=10)
-        ohlc_end_dt = user_end_dt + timedelta(days=1)  # Dodaj dzień żeby pobrać cały zakres
+        # Znajdź sąsiadujące dni
+        missing_dt = datetime.strptime(missing_date, '%Y-%m-%d')
         
-        # Order book snapshots: 10 minut wcześniej dla cech historycznych
-        orderbook_start_dt = user_start_dt - timedelta(minutes=10)
-        orderbook_end_dt = user_end_dt + timedelta(days=1)  # Dodaj dzień żeby pobrać cały zakres
+        # Sprawdź dzień przed
+        day_before = (missing_dt - timedelta(days=1)).strftime('%Y-%m-%d')
+        file_before = f"orderbook_raw/BTCUSDT-bookDepth-{day_before}.csv"
         
-        # Zakres dla finalnego wyniku: zachowaj dodatkowe 10 minut + cały dzień końcowy
-        result_start_dt = user_start_dt - timedelta(minutes=10)
-        result_end_dt = user_end_dt + timedelta(days=1)
+        # Sprawdź dzień po
+        day_after = (missing_dt + timedelta(days=1)).strftime('%Y-%m-%d')
+        file_after = f"orderbook_raw/BTCUSDT-bookDepth-{day_after}.csv"
         
-    except Exception as e:
-        print(f"Błąd parsowania daty: {e}")
-        sys.exit(1)
-    
-    os.makedirs(ORDERBOOK_DIR, exist_ok=True)
-    os.makedirs(OHLC_DIR, exist_ok=True)
-    
-    # Oblicz zakresy pobierania
-    ohlc_total = (ohlc_end_dt - ohlc_start_dt).days + 1
-    orderbook_total = (orderbook_end_dt - orderbook_start_dt).days + 1
-    user_total = (user_end_dt - user_start_dt).days + 1
-    
-    print(f"\n🚀 Pobieranie danych dla {symbol}")
-    print(f"📅 Zakres użytkownika: {date_start} do {date_end} ({user_total} dni)")
-    print(f"📈 Zakres OHLC: {ohlc_start_dt.strftime('%Y-%m-%d %H:%M')} do {ohlc_end_dt.strftime('%Y-%m-%d')} ({ohlc_total} dni)")
-    print(f"📊 Zakres Order Book: {orderbook_start_dt.strftime('%Y-%m-%d %H:%M')} do {orderbook_end_dt.strftime('%Y-%m-%d')} ({orderbook_total} dni)")
-    print(f"💾 Zakres wyniku: {result_start_dt.strftime('%Y-%m-%d %H:%M')} do {result_end_dt.strftime('%Y-%m-%d')} (+10 min historii)")
-    print(f"Order book katalog: {ORDERBOOK_DIR}")
-    print(f"OHLC katalog: {OHLC_DIR}")
-    print(f"Plik wynikowy: {MERGED_FILE}")
-    if save_json:
-        print(f"Plik JSON: {JSON_FILE}")
-    print()
-    
-    orderbook_files = []
-    ohlc_files = []
-    downloaded = 0
-    
-    # Pobierz OHLC dla rozszerzonego zakresu
-    print("🔄 Pobieranie danych OHLC (rozszerzony zakres dla średnich kroczących)...")
-    for i, dt in enumerate(daterange(ohlc_start_dt, ohlc_end_dt), 1):
-        date_str = dt.strftime("%Y-%m-%d")
+        # Wybierz źródło danych (preferuj dzień przed)
+        source_file = None
+        source_date = None
         
-        ohlc_path = download_and_extract_ohlc(symbol, date_str)
-        if ohlc_path:
-            ohlc_files.append(ohlc_path)
-            downloaded += 1
-            
-        print(f"OHLC Postęp: {i}/{ohlc_total} dni, pobrano {len(ohlc_files)} plików")
-    
-    # Pobierz Order Book dla rozszerzonego zakresu
-    print(f"\n🔄 Pobieranie danych Order Book (rozszerzony zakres dla cech historycznych)...")
-    orderbook_downloaded = 0
-    for i, dt in enumerate(daterange(orderbook_start_dt, orderbook_end_dt), 1):
-        date_str = dt.strftime("%Y-%m-%d")
-        
-        orderbook_path = download_and_extract_orderbook(symbol, date_str)
-        if orderbook_path:
-            orderbook_files.append(orderbook_path)
-            orderbook_downloaded += 1
-            
-        print(f"Order Book Postęp: {i}/{orderbook_total} dni, pobrano {len(orderbook_files)} plików")
-    
-    print(f"\n📥 Pobrano łącznie:")
-    print(f"  📈 OHLC: {len(ohlc_files)} plików")
-    print(f"  📊 Order Book: {len(orderbook_files)} plików")
-    
-    if orderbook_files and ohlc_files:
-        # Wczytaj i przetwórz dane
-        orderbook_df = load_and_process_orderbook(orderbook_files)
-        ohlc_df = load_and_process_ohlc(ohlc_files)
-        
-        if orderbook_df is not None and ohlc_df is not None:
-            # Połącz dane z filtrowaniem do rozszerzonego zakresu (zachowaj 10 min historii)
-            merge_orderbook_with_ohlc(orderbook_df, ohlc_df, save_json=save_json)
+        if os.path.exists(file_before):
+            source_file = file_before
+            source_date = day_before
+            print(f"      📋 Używam danych z: {day_before}")
+        elif os.path.exists(file_after):
+            source_file = file_after
+            source_date = day_after
+            print(f"      📋 Używam danych z: {day_after}")
         else:
-            print("❌ Nie można wczytać danych order book lub OHLC")
+            print(f"      ❌ Brak danych sąsiadujących dla {missing_date}")
+            continue
+        
+        # Wczytaj dane źródłowe
+        try:
+            source_df = pd.read_csv(source_file)
+            print(f"      📊 Wczytano {len(source_df):,} wierszy z {source_date}")
+            
+            # Skopiuj dane i dostosuj timestampy
+            new_df = source_df.copy()
+            
+            # Zamień timestampy na brakujący dzień
+            source_start = pd.to_datetime(source_date)
+            target_start = pd.to_datetime(missing_date)
+            
+            # Oblicz przesunięcie czasowe
+            time_shift = target_start - source_start
+            
+            # Dostosuj timestampy
+            new_df['timestamp'] = pd.to_datetime(new_df['timestamp']) + time_shift
+            new_df['timestamp'] = new_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Zapisz nowy plik
+            output_file = f"orderbook_raw/BTCUSDT-bookDepth-{missing_date}.csv"
+            new_df.to_csv(output_file, index=False)
+            
+            print(f"      ✅ Utworzono: {output_file} ({len(new_df):,} wierszy)")
+            
+        except Exception as e:
+            print(f"      ❌ Błąd podczas tworzenia danych: {e}")
+
+def check_and_fill_missing_orderbook():
+    """
+    Sprawdza brakujące dni order book i wypełnia je danymi z dni sąsiadujących
+    """
+    orderbook_dir = "orderbook_raw"
+    ohlc_dir = "ohlc_raw"
+    
+    # Pobierz listę plików
+    orderbook_files = [f for f in os.listdir(orderbook_dir) if f.endswith('.csv')]
+    ohlc_files = [f for f in os.listdir(ohlc_dir) if f.endswith('.csv')]
+    
+    # Wyciągnij daty z nazw plików
+    orderbook_dates = set()
+    for file in orderbook_files:
+        if 'BTCUSDT-bookDepth-' in file:
+            date_str = file.replace('BTCUSDT-bookDepth-', '').replace('.csv', '')
+            orderbook_dates.add(date_str)
+    
+    ohlc_dates = set()
+    for file in ohlc_files:
+        if 'BTCUSDT-1m-' in file:
+            date_str = file.replace('BTCUSDT-1m-', '').replace('.csv', '')
+            ohlc_dates.add(date_str)
+    
+    # Znajdź luki
+    missing_orderbook = ohlc_dates - orderbook_dates
+    
+    if missing_orderbook:
+        print(f"🔍 Znaleziono {len(missing_orderbook)} brakujących dni order book:")
+        for date in sorted(missing_orderbook):
+            print(f"   - {date}")
+        
+        # Wypełnij brakujące dane
+        create_missing_orderbook_data(sorted(missing_orderbook), orderbook_dir)
+        
+        print(f"✅ Wypełniono wszystkie brakujące dni order book!")
+        return True
     else:
-        print("❌ Nie pobrano żadnych plików order book lub OHLC")
+        print(f"✅ Brak luk w danych order book!")
+        return False
+
+def main():
+    """Główna funkcja pobierania i łączenia danych"""
+    import argparse
+    
+    # Parsuj argumenty z linii komend
+    parser = argparse.ArgumentParser(description='Pobierz i połącz dane OHLC z Order Book')
+    parser.add_argument('symbol', help='Symbol kryptowaluty (np. BTCUSDT)')
+    parser.add_argument('start_date', help='Data początkowa (YYYY-MM-DD)')
+    parser.add_argument('end_date', help='Data końcowa (YYYY-MM-DD)')
+    parser.add_argument('--extra-month', action='store_true', help='Dodaj 30 dni dla MA 43200')
+    
+    args = parser.parse_args()
+    
+    # Konwertuj stringi dat na datetime
+    try:
+        start_date = datetime.strptime(args.start_date, '%Y-%m-%d')
+        end_date = datetime.strptime(args.end_date, '%Y-%m-%d')
+    except ValueError as e:
+        print(f"❌ Błąd formatu daty: {e}")
+        print("Użyj formatu: YYYY-MM-DD (np. 2023-01-01)")
+        return
+    
+    symbol = args.symbol
+    extra_month_for_ma = args.extra_month
+    
+    print(f"🚀 Rozpoczynanie pobierania danych dla {symbol}")
+    print(f"📅 Zakres: {start_date.strftime('%Y-%m-%d')} - {end_date.strftime('%Y-%m-%d')}")
+    if extra_month_for_ma:
+        print(f"📊 Dodaję 30 dni dla obliczania MA 43200")
+    
+    # Sprawdź i wypełnij brakujące dane order book
+    print(f"\n🔍 Sprawdzam luki w danych order book...")
+    check_and_fill_missing_orderbook()
+    
+    # KROK 1: Sprawdź istniejące dane
+    data_exists, missing_ranges = check_existing_data_range(start_date, end_date, symbol)
+    
+    if data_exists:
+        print(f"✅ Dane już istnieją! Kończę pracę.")
+        return
+    
+    if missing_ranges:
+        print(f"📋 Brakujące zakresy do pobrania:")
+        for start, end in missing_ranges:
+            print(f"   {start.strftime('%Y-%m-%d')} - {end.strftime('%Y-%m-%d')}")
+    
+    # KROK 2: Pobierz brakujące dane
+    all_csv_files_orderbook = []
+    all_csv_files_ohlc = []
+    
+    for start, end in missing_ranges:
+        print(f"\n📥 Pobieram dane dla zakresu: {start.strftime('%Y-%m-%d')} - {end.strftime('%Y-%m-%d')}")
+        
+        for date in daterange(start, end):
+            date_str = date.strftime('%Y-%m-%d')
+            
+            # Pobierz order book
+            orderbook_csv = download_and_extract_orderbook(symbol, date_str)
+            if orderbook_csv:
+                all_csv_files_orderbook.append(orderbook_csv)
+            
+            # Pobierz OHLC
+            ohlc_csv = download_and_extract_ohlc(symbol, date_str)
+            if ohlc_csv:
+                all_csv_files_ohlc.append(ohlc_csv)
+    
+    if not all_csv_files_orderbook or not all_csv_files_ohlc:
+        print("❌ Brak plików do przetworzenia!")
+        return
+    
+    # KROK 3: Przetwórz dane
+    print(f"\n📊 Przetwarzam {len(all_csv_files_orderbook)} plików order book...")
+    orderbook_df = load_and_process_orderbook(all_csv_files_orderbook)
+    
+    print(f"\n📊 Przetwarzam {len(all_csv_files_ohlc)} plików OHLC...")
+    ohlc_df = load_and_process_ohlc(all_csv_files_ohlc)
+    
+    if orderbook_df is None or ohlc_df is None:
+        print("❌ Błąd przetwarzania danych!")
+        return
+    
+    # KROK 4: Połącz dane (ZOPTYMALIZOWANE - TYLKO WSPÓLNE)
+    merged_df = merge_orderbook_with_ohlc(orderbook_df, ohlc_df, extra_month_for_ma=extra_month_for_ma)
+    
+    # KROK 5: Zapisz metadata
+    save_metadata(start_date, end_date, symbol)
+    
+    print(f"\n🎉 Proces zakończony pomyślnie!")
+    print(f"📁 Plik wynikowy: {MERGED_FILE}")
+    print(f"📊 Liczba wierszy: {len(merged_df):,}")
+    print(f"📅 Zakres wynikowy: {merged_df['timestamp'].min()} - {merged_df['timestamp'].max()}")
 
 if __name__ == "__main__":
     main() 

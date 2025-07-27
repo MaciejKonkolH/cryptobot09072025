@@ -10,9 +10,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MODULE_DIR = PROJECT_ROOT / "feature_calculator_snapshot"
 
 # --- Konfiguracja Wejścia ---
-# Ścieżka do pliku JSON z danymi OHLC + Order Book
+# Ścieżka do pliku feather z danymi OHLC + Order Book (szybszy niż JSON)
 INPUT_DIR = PROJECT_ROOT / "download"  # Zmieniono ze "skrypty" na "download"
-INPUT_FILENAME = "orderbook_ohlc_merged.json"
+INPUT_FILENAME = "orderbook_ohlc_merged.feather"  # Zmieniono z .json na .feather
 INPUT_FILE_PATH = INPUT_DIR / INPUT_FILENAME
 
 # --- Konfiguracja Wyjścia ---

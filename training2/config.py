@@ -30,16 +30,16 @@ MODEL_FILENAME = "model.pkl"  # Jeden model dla wszystkich poziomów
 # --- Konfiguracja Multi-Output ---
 # Nazwy kolumn z etykietami dla różnych poziomów TP/SL
 LABEL_COLUMNS = [
-    'label_tp02_sl01',     # TP: 0.2%, SL: 0.1%
-    'label_tp015_sl0075',  # TP: 0.15%, SL: 0.075%
-    'label_tp01_sl005'     # TP: 0.1%, SL: 0.05%
+    'label_tp08_sl04',     # TP: 0.8%, SL: 0.4%
+    'label_tp06_sl03',     # TP: 0.6%, SL: 0.3%
+    'label_tp04_sl02'      # TP: 0.4%, SL: 0.2%
 ]
 
 # Opis poziomów dla raportowania
 TP_SL_LEVELS_DESC = [
-    "TP: 0.2%, SL: 0.1%",
-    "TP: 0.15%, SL: 0.075%", 
-    "TP: 0.1%, SL: 0.05%"
+    "TP: 0.8%, SL: 0.4%",
+    "TP: 0.6%, SL: 0.3%", 
+    "TP: 0.4%, SL: 0.2%"
 ]
 
 # --- Lista Cech do Treningu ---
