@@ -13,6 +13,25 @@ from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
+
+class XGBoostWrapper:
+    """Wrapper dla native XGBoost model kompatybilny z sklearn"""
+    def __init__(self, xgb_model):
+        self.xgb_model = xgb_model
+        self.classes_ = np.array([0, 1, 2])  # LONG, SHORT, NEUTRAL
+    
+    def predict_proba(self, X):
+        import xgboost as xgb
+        dtest = xgb.DMatrix(X)
+        probs = self.xgb_model.predict(dtest)
+        return probs.reshape(-1, 3)
+    
+    def predict(self, X):
+        probs = self.predict_proba(X)
+        return np.argmax(probs, axis=1)
+
+
+
 class MultiOutputXGBoost:
     """
     Klasa do trenowania osobnych modeli XGBoost dla 5 poziomów TP/SL.
@@ -36,10 +55,24 @@ class MultiOutputXGBoost:
             'num_class': 3,
             'eval_metric': 'mlogloss'
         }
+        
+        # Dodaj wagi klas jeśli włączone
+        if hasattr(cfg, 'ENABLE_CLASS_WEIGHTS_IN_TRAINING') and cfg.ENABLE_CLASS_WEIGHTS_IN_TRAINING:
+            # Dla multi-class, używamy sample_weight zamiast scale_pos_weight
+            # scale_pos_weight działa tylko dla binary classification
+            logger.info(f"Wagi klas WŁĄCZONE: {cfg.CLASS_WEIGHTS}")
+        else:
+            logger.info("Wagi klas WYŁĄCZONE - standardowe trening")
+            
         return xgb_params
 
     def train_model(self, X_train, y_train, X_val, y_val):
         logger.info("Rozpoczynanie treningu osobnych modeli XGBoost (native API) dla każdego poziomu TP/SL...")
+        
+        # Ustaw nazwy cech
+        self.feature_names = X_train.columns.tolist()
+        logger.info(f"Nazwy cech ustawione: {len(self.feature_names)} cech")
+        
         self.models = []
         xgb_params = self.build_model()
         start_time = time.time()
@@ -61,9 +94,17 @@ class MultiOutputXGBoost:
                 class_counts = pd.Series(y_bal).value_counts().sort_index()
                 logger.info(f"  Rozkład klas: LONG={class_counts.get(0, 0):,}, SHORT={class_counts.get(1, 0):,}, NEUTRAL={class_counts.get(2, 0):,}")
             
-            # Przygotuj dane dla native API
-            dtrain = xgb.DMatrix(X_bal, label=y_bal)
-            dval = xgb.DMatrix(X_val, label=y_val[label_col])
+            # Przygotuj dane dla native API z wagami klas
+            if hasattr(cfg, 'ENABLE_CLASS_WEIGHTS_IN_TRAINING') and cfg.ENABLE_CLASS_WEIGHTS_IN_TRAINING:
+                # Oblicz wagi dla każdej próbki na podstawie jej klasy
+                sample_weights = np.array([cfg.CLASS_WEIGHTS[int(y)] for y in y_bal])
+                dtrain = xgb.DMatrix(X_bal, label=y_bal, weight=sample_weights, feature_names=self.feature_names)
+                logger.info(f"  Wagi próbek: LONG={cfg.CLASS_WEIGHTS[0]}, SHORT={cfg.CLASS_WEIGHTS[1]}, NEUTRAL={cfg.CLASS_WEIGHTS[2]}")
+            else:
+                dtrain = xgb.DMatrix(X_bal, label=y_bal, feature_names=self.feature_names)
+            
+            # Walidacja bez wag (standardowe)
+            dval = xgb.DMatrix(X_val, label=y_val[label_col], feature_names=self.feature_names)
             
             logger.info(f"  Rozpoczynanie treningu modelu {i+1}...")
             
@@ -125,7 +166,7 @@ class MultiOutputXGBoost:
         """
         preds = {}
         for i, model in enumerate(self.models):
-            dtest = xgb.DMatrix(X)
+            dtest = xgb.DMatrix(X, feature_names=self.feature_names)
             # Native API zwraca prawdopodobieństwa
             probabilities = model.predict(dtest)
             # Konwertuj na klasy (argmax)
@@ -140,7 +181,7 @@ class MultiOutputXGBoost:
         """
         probas = {}
         for i, model in enumerate(self.models):
-            dtest = xgb.DMatrix(X)
+            dtest = xgb.DMatrix(X, feature_names=self.feature_names)
             # Native API zwraca prawdopodobieństwa
             probabilities = model.predict(dtest)
             # Reshape do formatu [n_samples, n_classes]
@@ -150,8 +191,13 @@ class MultiOutputXGBoost:
     def get_feature_importance(self):
         # Zwraca średnią ważność cech ze wszystkich modeli
         importances = [model.get_score(importance_type='gain') for model in self.models]
-        # Konwertuj słowniki na array
-        avg_importances = np.zeros(len(cfg.FEATURES))
+        # Konwertuj słowniki na array - użyj dynamicznej liczby cech
+        if hasattr(self, 'feature_names'):
+            n_features = len(self.feature_names)
+        else:
+            n_features = len(cfg.FEATURES)
+            
+        avg_importances = np.zeros(n_features)
         
         for imp_dict in importances:
             for feat_name, importance in imp_dict.items():
@@ -159,7 +205,7 @@ class MultiOutputXGBoost:
                     # Native API używa 'f0', 'f1', etc.
                     if feat_name.startswith('f'):
                         feat_idx = int(feat_name[1:])
-                        if feat_idx < len(cfg.FEATURES):
+                        if feat_idx < n_features:
                             avg_importances[feat_idx] += importance
                 except (ValueError, IndexError):
                     # Ignoruj nieprawidłowe nazwy cech
@@ -169,19 +215,97 @@ class MultiOutputXGBoost:
         return avg_importances
 
     def save_model(self, filepath):
-        import joblib
+        """
+        Zapisuje każdy model osobno w formacie JSON dla łatwego użycia w FreqTrade.
+        Każdy model ma jasną nazwę z poziomem TP/SL.
+        """
+        import os
+        import re
+        
+        # Utwórz katalog jeśli nie istnieje
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        
+        # Zapisz każdy model osobno
         for i, model in enumerate(self.models):
-            model.save_model(f"{filepath}_level{i+1}.json")
-        logger.info(f"Modele zapisane do {filepath}_level*.json")
+            level_desc = cfg.TP_SL_LEVELS_DESC[i]
+            
+            # Wyciągnij TP/SL z opisu
+            match = re.search(r'TP: ([\d.]+)%, SL: ([\d.]+)%', level_desc)
+            if match:
+                tp = match.group(1).replace('.', 'p')  # 0.6 -> 0p6
+                sl = match.group(2).replace('.', 'p')  # 0.3 -> 0p3
+                model_filename = f"model_tp{tp}_sl{sl}.json"
+            else:
+                model_filename = f"model_level{i+1}.json"
+            
+            # Pełna ścieżka do modelu
+            model_path = os.path.join(os.path.dirname(filepath), model_filename)
+            
+            # Zapisz model w formacie JSON
+            model.save_model(model_path)
+            logger.info(f"Model {i+1} ({level_desc}) zapisany: {model_path}")
+        
+        logger.info(f"Wszystkie modele zapisane osobno w katalogu: {os.path.dirname(filepath)}")
+        
+        # Zapisz informacje o modelach do pliku index
+        models_info = []
+        for i, level_desc in enumerate(cfg.TP_SL_LEVELS_DESC):
+            match = re.search(r'TP: ([\d.]+)%, SL: ([\d.]+)%', level_desc)
+            if match:
+                tp = match.group(1).replace('.', 'p')
+                sl = match.group(2).replace('.', 'p')
+                model_filename = f"model_tp{tp}_sl{sl}.json"
+            else:
+                model_filename = f"model_level{i+1}.json"
+            
+            models_info.append({
+                'index': i,
+                'filename': model_filename,
+                'description': level_desc,
+                'tp_sl': match.groups() if match else None
+            })
+        
+        # Zapisz index modeli
+        import json
+        index_path = os.path.join(os.path.dirname(filepath), 'models_index.json')
+        with open(index_path, 'w') as f:
+            json.dump(models_info, f, indent=2)
+        logger.info(f"Index modeli zapisany: {index_path}")
 
     def load_model(self, filepath):
-        import joblib
+        """Wczytuje modele z nowego formatu (osobne pliki JSON)."""
+        import os
+        import re
+        
         self.models = []
-        for i in range(5):
+        
+        # Wczytaj modele z katalogu
+        model_dir = os.path.dirname(filepath)
+        
+        for i, level_desc in enumerate(cfg.TP_SL_LEVELS_DESC):
             model = xgb.Booster()
-            model.load_model(f"{filepath}_level{i+1}.json")
+            
+            # Wyciągnij TP/SL z opisu
+            match = re.search(r'TP: ([\d.]+)%, SL: ([\d.]+)%', level_desc)
+            if match:
+                tp = match.group(1).replace('.', 'p')  # 0.6 -> 0p6
+                sl = match.group(2).replace('.', 'p')  # 0.3 -> 0p3
+                model_filename = f"model_tp{tp}_sl{sl}.json"
+            else:
+                model_filename = f"model_level{i+1}.json"
+            
+            model_path = os.path.join(model_dir, model_filename)
+            
+            try:
+                model.load_model(model_path)
+                logger.info(f"Model {i+1} ({level_desc}) wczytany z: {model_path}")
+            except Exception as e:
+                logger.error(f"Błąd wczytywania modelu {i+1}: {e}")
+                raise
+            
             self.models.append(model)
-        logger.info(f"Modele wczytane z {filepath}_level*.json")
+        
+        logger.info(f"Wszystkie modele wczytane pomyślnie z katalogu: {model_dir}")
 
     def _log_validation_metrics(self, y_val_true, y_val_pred):
         logger.info("Metryki walidacyjne:")

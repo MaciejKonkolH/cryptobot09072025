@@ -367,6 +367,109 @@ class OHLCOrderBookFeatureCalculator:
         logger.info("Względne cechy obliczone (18 cech)")
         return df
 
+    def calculate_market_regime_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Oblicza 5 cech market regime."""
+        logger.info("Obliczanie cech market regime...")
+        
+        # 1. Market Trend Strength (0-100)
+        logger.info("  -> Market trend strength...")
+        df['market_trend_strength'] = self._calculate_market_trend_strength(df)
+        
+        # 2. Market Trend Direction (-1 do 1)
+        logger.info("  -> Market trend direction...")
+        df['market_trend_direction'] = self._calculate_market_trend_direction(df)
+        
+        # 3. Market Choppiness (0-100)
+        logger.info("  -> Market choppiness...")
+        df['market_choppiness'] = self._calculate_market_choppiness(df)
+        
+        # 4. Bollinger Band Width (0-1)
+        logger.info("  -> Bollinger band width...")
+        df['bollinger_band_width'] = self._calculate_bollinger_band_width(df)
+        
+        # 5. Market Regime Classification (0/1/2)
+        logger.info("  -> Market regime classification...")
+        df['market_regime'] = self._calculate_market_regime(df)
+        
+        logger.info("Cechy market regime obliczone (5 cech)")
+        return df
+
+    def calculate_volatility_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Oblicza 6 cech volatility clustering."""
+        logger.info("Obliczanie cech volatility clustering...")
+        
+        # 1. Volatility Regime (0/1/2)
+        logger.info("  -> Volatility regime...")
+        df['volatility_regime'] = self._calculate_volatility_regime(df)
+        
+        # 2. Volatility Percentile (0-100)
+        logger.info("  -> Volatility percentile...")
+        df['volatility_percentile'] = self._calculate_volatility_percentile(df)
+        
+        # 3. Volatility Persistence (0-1)
+        logger.info("  -> Volatility persistence...")
+        df['volatility_persistence'] = self._calculate_volatility_persistence(df)
+        
+        # 4. Volatility Momentum (-1 do 1)
+        logger.info("  -> Volatility momentum...")
+        df['volatility_momentum'] = self._calculate_volatility_momentum(df)
+        
+        # 5. Volatility of Volatility (0-1)
+        logger.info("  -> Volatility of volatility...")
+        df['volatility_of_volatility'] = self._calculate_volatility_of_volatility(df)
+        
+        # 6. Volatility Term Structure (-1 do 1)
+        logger.info("  -> Volatility term structure...")
+        df['volatility_term_structure'] = self._calculate_volatility_term_structure(df)
+        
+        logger.info("Cechy volatility clustering obliczone (6 cech)")
+        return df
+
+    def calculate_imbalance_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Oblicza 8 cech order book imbalance."""
+        logger.info("Obliczanie cech order book imbalance...")
+        
+        # Sprawdź czy mamy dane orderbook
+        orderbook_columns = [col for col in df.columns if col.startswith(('snapshot1_', 'snapshot2_'))]
+        if len(orderbook_columns) == 0:
+            logger.warning("Brak danych orderbook - pomijam cechy imbalance")
+            return df
+        
+        # 1. Volume Imbalance (-1 do 1)
+        logger.info("  -> Volume imbalance...")
+        df['volume_imbalance'] = self._calculate_volume_imbalance(df)
+        
+        # 2. Weighted Volume Imbalance (-1 do 1)
+        logger.info("  -> Weighted volume imbalance...")
+        df['weighted_volume_imbalance'] = self._calculate_weighted_volume_imbalance(df)
+        
+        # 3. Volume Imbalance Trend (-1 do 1)
+        logger.info("  -> Volume imbalance trend...")
+        df['volume_imbalance_trend'] = self._calculate_volume_imbalance_trend(df)
+        
+        # 4. Price Pressure (-1 do 1)
+        logger.info("  -> Price pressure...")
+        df['price_pressure'] = self._calculate_price_pressure(df)
+        
+        # 5. Weighted Price Pressure (-1 do 1)
+        logger.info("  -> Weighted price pressure...")
+        df['weighted_price_pressure'] = self._calculate_weighted_price_pressure(df)
+        
+        # 6. Price Pressure Momentum (-1 do 1)
+        logger.info("  -> Price pressure momentum...")
+        df['price_pressure_momentum'] = self._calculate_price_pressure_momentum(df)
+        
+        # 7. Order Flow Imbalance (-1 do 1)
+        logger.info("  -> Order flow imbalance...")
+        df['order_flow_imbalance'] = self._calculate_order_flow_imbalance(df)
+        
+        # 8. Order Flow Trend (-1 do 1)
+        logger.info("  -> Order flow trend...")
+        df['order_flow_trend'] = self._calculate_order_flow_trend(df)
+        
+        logger.info("Cechy order book imbalance obliczone (8 cech)")
+        return df
+
     def _calculate_manual_adx(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
         """Oblicza wskaźnik ADX ręcznie."""
         df_adx = df.copy()
@@ -395,6 +498,348 @@ class OHLCOrderBookFeatureCalculator:
         )
         
         return df_adx['dx'].ewm(alpha=alpha, adjust=False).mean()
+
+    # --- METODY POMOCNICZE DLA MARKET REGIME ---
+    
+    def _calculate_market_trend_strength(self, df: pd.DataFrame) -> pd.Series:
+        """Oblicza siłę trendu (0-100) na podstawie ADX."""
+        adx = self._calculate_manual_adx(df, period=config.ADX_PERIOD)
+        # Normalizacja ADX do zakresu 0-100
+        trend_strength = np.clip(adx, 0, 100)
+        return trend_strength.fillna(0)
+
+    def _calculate_market_trend_direction(self, df: pd.DataFrame) -> pd.Series:
+        """Oblicza kierunek trendu (-1 do 1)."""
+        # Użyj średnich kroczących do określenia kierunku
+        ma_short = df['close'].rolling(window=config.MARKET_REGIME_PERIODS[0]).mean()
+        ma_long = df['close'].rolling(window=config.MARKET_REGIME_PERIODS[1]).mean()
+        
+        # Kierunek trendu
+        trend_direction = np.where(
+            ma_long != 0,
+            (ma_short - ma_long) / ma_long,
+            0
+        )
+        
+        # Normalizacja do zakresu [-1, 1]
+        trend_direction = np.clip(trend_direction, -1, 1)
+        return pd.Series(trend_direction, index=df.index).fillna(0)
+
+    def _calculate_market_choppiness(self, df: pd.DataFrame) -> pd.Series:
+        """Oblicza wskaźnik chaotyczności (0-100)."""
+        period = config.CHOPPINESS_PERIOD
+        
+        # True Range
+        tr = np.maximum(
+            df['high'] - df['low'],
+            np.maximum(
+                np.abs(df['high'] - df['close'].shift(1)),
+                np.abs(df['low'] - df['close'].shift(1))
+            )
+        )
+        
+        # Suma True Range
+        tr_sum = tr.rolling(window=period).sum()
+        
+        # Długość ścieżki (suma zmian)
+        path_length = (df['high'] - df['low']).rolling(window=period).sum()
+        
+        # Choppiness Index
+        choppiness = np.where(
+            tr_sum > 0,
+            100 * np.log10(path_length / tr_sum) / np.log10(period),
+            0
+        )
+        
+        # Clipping do zakresu 0-100
+        choppiness = np.clip(choppiness, 0, 100)
+        return pd.Series(choppiness, index=df.index).fillna(0)
+
+    def _calculate_bollinger_band_width(self, df: pd.DataFrame) -> pd.Series:
+        """Oblicza szerokość pasm Bollingera (0-1)."""
+        period = config.BOLLINGER_WIDTH_PERIOD
+        
+        # Bollinger Bands
+        bb_middle = df['close'].rolling(window=period).mean()
+        bb_std = df['close'].rolling(window=period).std()
+        bb_upper = bb_middle + (2 * bb_std)
+        bb_lower = bb_middle - (2 * bb_std)
+        
+        # Szerokość pasm
+        bb_width = np.where(
+            bb_middle != 0,
+            (bb_upper - bb_lower) / bb_middle,
+            0
+        )
+        
+        # Normalizacja do zakresu 0-1
+        bb_width = np.clip(bb_width, 0, 1)
+        return pd.Series(bb_width, index=df.index).fillna(0)
+
+    def _calculate_market_regime(self, df: pd.DataFrame) -> pd.Series:
+        """Klasyfikuje reżim rynkowy (0=sideways, 1=trend, 2=volatile)."""
+        # Użyj ADX do określenia siły trendu
+        adx = self._calculate_manual_adx(df, period=config.ADX_PERIOD)
+        
+        # Użyj choppiness do określenia chaotyczności
+        choppiness = self._calculate_market_choppiness(df)
+        
+        # Klasyfikacja
+        regime = np.where(
+            adx > 25,  # Silny trend
+            1,  # Trend
+            np.where(
+                choppiness > 60,  # Wysoka chaotyczność
+                2,  # Volatile
+                0   # Sideways
+            )
+        )
+        
+        return pd.Series(regime, index=df.index).fillna(0)
+
+    # --- METODY POMOCNICZE DLA VOLATILITY CLUSTERING ---
+    
+    def _calculate_volatility_regime(self, df: pd.DataFrame) -> pd.Series:
+        """Klasyfikuje reżim zmienności (0=low, 1=normal, 2=high)."""
+        # Oblicz volatility na różnych okresach
+        volatility_20 = df['close'].pct_change().rolling(window=config.VOLATILITY_WINDOWS[0]).std()
+        volatility_60 = df['close'].pct_change().rolling(window=config.VOLATILITY_WINDOWS[1]).std()
+        
+        # Percentyl volatility w długim oknie
+        vol_percentile = volatility_60.rolling(window=config.VOLATILITY_PERCENTILE_WINDOW).rank(pct=True) * 100
+        
+        # Klasyfikacja
+        regime = np.where(
+            vol_percentile > 80,  # Wysoka zmienność
+            2,  # High volatility
+            np.where(
+                vol_percentile < 20,  # Niska zmienność
+                0,  # Low volatility
+                1   # Normal volatility
+            )
+        )
+        
+        return pd.Series(regime, index=df.index).fillna(1)
+
+    def _calculate_volatility_percentile(self, df: pd.DataFrame) -> pd.Series:
+        """Oblicza percentyl zmienności (0-100)."""
+        # Volatility na długim okresie
+        volatility = df['close'].pct_change().rolling(window=config.VOLATILITY_WINDOWS[2]).std()
+        
+        # Percentyl w rolling window
+        percentile = volatility.rolling(window=config.VOLATILITY_PERCENTILE_WINDOW).rank(pct=True) * 100
+        
+        # Clipping do zakresu 0-100
+        percentile = np.clip(percentile, 0, 100)
+        return pd.Series(percentile, index=df.index).fillna(50)
+
+    def _calculate_volatility_persistence(self, df: pd.DataFrame) -> pd.Series:
+        """Oblicza trwałość zmienności (0-1)."""
+        # Volatility
+        volatility = df['close'].pct_change().rolling(window=config.VOLATILITY_WINDOWS[1]).std()
+        
+        # Autokorelacja volatility (lag=1)
+        persistence = volatility.rolling(window=config.VOLATILITY_WINDOWS[1]).apply(
+            lambda x: x.autocorr(lag=1) if len(x) > 1 else 0
+        )
+        
+        # Clipping do zakresu 0-1
+        persistence = np.clip(persistence, 0, 1)
+        return pd.Series(persistence, index=df.index).fillna(0)
+
+    def _calculate_volatility_momentum(self, df: pd.DataFrame) -> pd.Series:
+        """Oblicza momentum zmienności (-1 do 1)."""
+        # Volatility na różnych okresach
+        vol_short = df['close'].pct_change().rolling(window=config.VOLATILITY_WINDOWS[0]).std()
+        vol_long = df['close'].pct_change().rolling(window=config.VOLATILITY_WINDOWS[2]).std()
+        
+        # Momentum (różnica między krótko- i długoterminową zmiennością)
+        momentum = np.where(
+            vol_long > config.VOLATILITY_MIN_THRESHOLD,
+            (vol_short - vol_long) / vol_long,
+            0
+        )
+        
+        # Normalizacja do zakresu [-1, 1]
+        momentum = np.clip(momentum, -1, 1)
+        return pd.Series(momentum, index=df.index).fillna(0)
+
+    def _calculate_volatility_of_volatility(self, df: pd.DataFrame) -> pd.Series:
+        """Oblicza zmienność zmienności (0-1)."""
+        # Volatility
+        volatility = df['close'].pct_change().rolling(window=config.VOLATILITY_WINDOWS[1]).std()
+        
+        # Volatility of volatility
+        vol_of_vol = np.where(
+            volatility > config.VOLATILITY_MIN_THRESHOLD,
+            volatility.rolling(window=config.VOLATILITY_WINDOWS[0]).std() / volatility,
+            0
+        )
+        
+        # Clipping do zakresu 0-1
+        vol_of_vol = np.clip(vol_of_vol, 0, 1)
+        return pd.Series(vol_of_vol, index=df.index).fillna(0)
+
+    def _calculate_volatility_term_structure(self, df: pd.DataFrame) -> pd.Series:
+        """Oblicza strukturę terminową zmienności (-1 do 1)."""
+        # Volatility na różnych okresach
+        vol_short = df['close'].pct_change().rolling(window=config.VOLATILITY_WINDOWS[0]).std()
+        vol_medium = df['close'].pct_change().rolling(window=config.VOLATILITY_WINDOWS[1]).std()
+        vol_long = df['close'].pct_change().rolling(window=config.VOLATILITY_WINDOWS[2]).std()
+        
+        # Term structure slope
+        term_structure = np.where(
+            vol_medium > config.VOLATILITY_MIN_THRESHOLD,
+            (vol_short - vol_long) / vol_medium,
+            0
+        )
+        
+        # Normalizacja do zakresu [-1, 1]
+        term_structure = np.clip(term_structure, -1, 1)
+        return pd.Series(term_structure, index=df.index).fillna(0)
+
+    # --- METODY POMOCNICZE DLA ORDER BOOK IMBALANCE ---
+    
+    def _calculate_volume_imbalance(self, df: pd.DataFrame) -> pd.Series:
+        """Oblicza volume imbalance (-1 do 1)."""
+        # Sprawdź czy mamy dane orderbook
+        if 'snapshot1_bid_volume' not in df.columns or 'snapshot1_ask_volume' not in df.columns:
+            return pd.Series(0, index=df.index)
+        
+        bid_volume = df['snapshot1_bid_volume']
+        ask_volume = df['snapshot1_ask_volume']
+        
+        # Volume imbalance
+        total_volume = bid_volume + ask_volume
+        imbalance = np.where(
+            total_volume > 0,
+            (bid_volume - ask_volume) / total_volume,
+            0
+        )
+        
+        # Clipping do zakresu [-1, 1]
+        imbalance = np.clip(imbalance, -1, 1)
+        return pd.Series(imbalance, index=df.index).fillna(0)
+
+    def _calculate_weighted_volume_imbalance(self, df: pd.DataFrame) -> pd.Series:
+        """Oblicza weighted volume imbalance (-1 do 1)."""
+        # Sprawdź czy mamy dane orderbook
+        if 'snapshot1_bid_volume' not in df.columns or 'snapshot1_ask_volume' not in df.columns:
+            return pd.Series(0, index=df.index)
+        
+        bid_volume = df['snapshot1_bid_volume']
+        ask_volume = df['snapshot1_ask_volume']
+        
+        # Weighted imbalance (większa waga dla bliższych poziomów)
+        weighted_imbalance = np.where(
+            (bid_volume + ask_volume) > 0,
+            (bid_volume - ask_volume) / (bid_volume + ask_volume),
+            0
+        )
+        
+        # Clipping do zakresu [-1, 1]
+        weighted_imbalance = np.clip(weighted_imbalance, -1, 1)
+        return pd.Series(weighted_imbalance, index=df.index).fillna(0)
+
+    def _calculate_volume_imbalance_trend(self, df: pd.DataFrame) -> pd.Series:
+        """Oblicza trend volume imbalance (-1 do 1)."""
+        # Oblicz volume imbalance
+        imbalance = self._calculate_volume_imbalance(df)
+        
+        # Trend (różnica między obecnym a średnim)
+        trend = imbalance - imbalance.rolling(window=config.PRESSURE_WINDOW).mean()
+        
+        # Normalizacja do zakresu [-1, 1]
+        trend = np.clip(trend, -1, 1)
+        return pd.Series(trend, index=df.index).fillna(0)
+
+    def _calculate_price_pressure(self, df: pd.DataFrame) -> pd.Series:
+        """Oblicza price pressure (-1 do 1)."""
+        # Sprawdź czy mamy spread
+        if 'snapshot1_spread' not in df.columns:
+            return pd.Series(0, index=df.index)
+        
+        spread = df['snapshot1_spread']
+        volume_imbalance = self._calculate_volume_imbalance(df)
+        
+        # Price pressure (imbalance * inverse spread)
+        pressure = np.where(
+            spread > config.MIN_SPREAD_THRESHOLD,
+            volume_imbalance / spread,
+            0
+        )
+        
+        # Normalizacja do zakresu [-1, 1]
+        pressure = np.clip(pressure, -1, 1)
+        return pd.Series(pressure, index=df.index).fillna(0)
+
+    def _calculate_weighted_price_pressure(self, df: pd.DataFrame) -> pd.Series:
+        """Oblicza weighted price pressure (-1 do 1)."""
+        # Sprawdź czy mamy spread
+        if 'snapshot1_spread' not in df.columns:
+            return pd.Series(0, index=df.index)
+        
+        spread = df['snapshot1_spread']
+        weighted_imbalance = self._calculate_weighted_volume_imbalance(df)
+        
+        # Weighted price pressure
+        pressure = np.where(
+            spread > config.MIN_SPREAD_THRESHOLD,
+            weighted_imbalance / spread,
+            0
+        )
+        
+        # Normalizacja do zakresu [-1, 1]
+        pressure = np.clip(pressure, -1, 1)
+        return pd.Series(pressure, index=df.index).fillna(0)
+
+    def _calculate_price_pressure_momentum(self, df: pd.DataFrame) -> pd.Series:
+        """Oblicza momentum price pressure (-1 do 1)."""
+        # Oblicz price pressure
+        pressure = self._calculate_price_pressure(df)
+        
+        # Momentum (różnica między obecnym a poprzednim)
+        momentum = pressure.diff()
+        
+        # Normalizacja do zakresu [-1, 1]
+        momentum = np.clip(momentum, -1, 1)
+        return pd.Series(momentum, index=df.index).fillna(0)
+
+    def _calculate_order_flow_imbalance(self, df: pd.DataFrame) -> pd.Series:
+        """Oblicza order flow imbalance (-1 do 1)."""
+        # Sprawdź czy mamy dane orderbook
+        if 'snapshot1_bid_volume' not in df.columns or 'snapshot1_ask_volume' not in df.columns:
+            return pd.Series(0, index=df.index)
+        
+        bid_volume = df['snapshot1_bid_volume']
+        ask_volume = df['snapshot1_ask_volume']
+        
+        # Order flow imbalance (zmiana volume)
+        bid_change = bid_volume.diff()
+        ask_change = ask_volume.diff()
+        
+        total_change = bid_change + ask_change
+        flow_imbalance = np.where(
+            total_change != 0,
+            (bid_change - ask_change) / total_change,
+            0
+        )
+        
+        # Clipping do zakresu [-1, 1]
+        flow_imbalance = np.clip(flow_imbalance, -1, 1)
+        return pd.Series(flow_imbalance, index=df.index).fillna(0)
+
+    def _calculate_order_flow_trend(self, df: pd.DataFrame) -> pd.Series:
+        """Oblicza trend order flow (-1 do 1)."""
+        # Oblicz order flow imbalance
+        flow_imbalance = self._calculate_order_flow_imbalance(df)
+        
+        # Trend (rolling mean)
+        trend = flow_imbalance.rolling(window=config.PRESSURE_WINDOW).mean()
+        
+        # Normalizacja do zakresu [-1, 1]
+        trend = np.clip(trend, -1, 1)
+        return pd.Series(trend, index=df.index).fillna(0)
 
     def trim_warmup_period(self, df: pd.DataFrame) -> pd.DataFrame:
         """Obcina okres rozgrzewania z danych."""
@@ -436,6 +881,11 @@ class OHLCOrderBookFeatureCalculator:
         # Obliczanie cech względnych
         df = self.calculate_relative_features(df)
         
+        # Obliczanie nowych zaawansowanych cech
+        df = self.calculate_market_regime_features(df)
+        df = self.calculate_volatility_features(df)
+        df = self.calculate_imbalance_features(df)
+        
         # Obcinanie okresu rozgrzewania
         df = self.trim_warmup_period(df)
         
@@ -457,7 +907,7 @@ class OHLCOrderBookFeatureCalculator:
         
         # Podsumowanie
         feature_columns = [col for col in df.columns if col not in ['open', 'high', 'low', 'close', 'volume']]
-        logger.info(f"Obliczono {len(feature_columns)} cech (32 stare + 18 nowe = 50 total)")
+        logger.info(f"Obliczono {len(feature_columns)} cech (32 stare + 18 względne + 19 zaawansowane = 69 total)")
         logger.info(f"Finalny rozmiar: {len(df):,} wierszy, {len(df.columns)} kolumn")
         
         elapsed_time = time.time() - start_time

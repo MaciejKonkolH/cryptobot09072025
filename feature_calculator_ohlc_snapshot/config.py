@@ -103,4 +103,37 @@ RELATIVE_FEATURES = [
     
     # Cechy orderbook (4 cechy)
     'spread_tightness', 'depth_ratio_s1', 'depth_ratio_s2', 'depth_momentum'
+]
+
+# --- PARAMETRY DLA NOWYCH ZAAWANSOWANYCH CECH ---
+
+# Market Regime parameters
+MARKET_REGIME_PERIODS = [20, 50]  # Okresy dla trend detection
+CHOPPINESS_PERIOD = 14
+BOLLINGER_WIDTH_PERIOD = 20
+
+# Volatility Clustering parameters  
+VOLATILITY_WINDOWS = [20, 60, 240]  # Okresy dla volatility
+VOLATILITY_PERCENTILE_WINDOW = 60   # Okres dla percentyla (zmniejszony z 240 na 60)
+VOLATILITY_MIN_THRESHOLD = 0.001    # Minimalny próg dla volatility
+
+# Order Book Imbalance parameters
+IMBALANCE_LEVELS = [1, 2, 3]  # Poziomy do analizy
+PRESSURE_WINDOW = 10  # Okres dla pressure trend
+MIN_SPREAD_THRESHOLD = 0.0001  # Minimalny spread dla price pressure
+
+# Lista nowych zaawansowanych cech
+NEW_ADVANCED_FEATURES = [
+    # Market Regime (5 cech)
+    'market_trend_strength', 'market_trend_direction', 'market_choppiness',
+    'bollinger_band_width', 'market_regime',
+    
+    # Volatility Clustering (6 cech)
+    'volatility_regime', 'volatility_percentile', 'volatility_persistence',
+    'volatility_momentum', 'volatility_of_volatility', 'volatility_term_structure',
+    
+    # Order Book Imbalance (8 cech)
+    'volume_imbalance', 'weighted_volume_imbalance', 'volume_imbalance_trend',
+    'price_pressure', 'weighted_price_pressure', 'price_pressure_momentum',
+    'order_flow_imbalance', 'order_flow_trend'
 ] 

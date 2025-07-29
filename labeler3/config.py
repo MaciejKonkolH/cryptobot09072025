@@ -27,15 +27,25 @@ LOG_FILENAME = 'labeler3.log'
 
 # --- Parametry Etykietowania ---
 # Okno przyszłości w minutach (jak długo czekamy na TP/SL)
-FUTURE_WINDOW_MINUTES = 60  # 1 godzina
+FUTURE_WINDOW_MINUTES = 120  # 1 godzina
 
 # Poziomy TP/SL w procentach [(TP%, SL%), ...]
 TP_SL_LEVELS = [
-    (0.8, 0.2),   # TP 0.8%, SL 0.4%
-    (0.6, 0.3),   # TP 0.8%, SL 0.4%
-    (0.8, 0.4),   # TP 0.8%, SL 0.4%
-    (1.0, 0.5),   # TP 1.0%, SL 0.5%
-    (1.2, 0.6),   # TP 1.2%, SL 0.6%
+    (0.6, 0.2),
+    (0.6, 0.3),
+    (0.8, 0.2),
+    (0.8, 0.3),
+    (0.8, 0.4),
+    (1.0, 0.3),
+    (1.0, 0.4),
+    (1.0, 0.5),
+    (1.2, 0.4),
+    (1.2, 0.5),
+    (1.2, 0.6),  
+    (1.4, 0.4),   
+    (1.4, 0.5),   
+    (1.4, 0.6),   
+    (1.4, 0.7),   
 ]
 
 # Mapowanie etykiet 3-klasowe na liczby całkowite

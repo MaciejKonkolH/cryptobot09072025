@@ -4,10 +4,18 @@ Plik z funkcjami pomocniczymi dla modułu treningowego training3.
 import logging
 import os
 import sys
+import re
 from pathlib import Path
 
 # Import config jako alias, aby uniknąć konfliktu nazw
 from training3 import config as trainer_config
+
+def extract_future_window(filename):
+    """Wyciąga future_window z nazwy pliku."""
+    match = re.search(r'fw(\d+)m', filename)
+    if match:
+        return f"{match.group(1)} minut"
+    return "nieznany"
 
 def find_project_root(marker_file=".project_root"):
     """
@@ -160,6 +168,7 @@ def save_training_results_to_markdown(evaluation_results, model_params, data_inf
         
         # Parametry modelu
         f.write("## 📊 PARAMETRY MODELU\n")
+        f.write(f"- NAZWA PLIKU: {cfg.MODEL_FILENAME}\n")
         f.write(f"- N_ESTIMATORS: {model_params.get('n_estimators', 'N/A')}\n")
         f.write(f"- LEARNING_RATE: {model_params.get('learning_rate', 'N/A')}\n")
         f.write(f"- MAX_DEPTH: {model_params.get('max_depth', 'N/A')}\n")
@@ -167,6 +176,7 @@ def save_training_results_to_markdown(evaluation_results, model_params, data_inf
         f.write(f"- COLSAMPLE_BYTREE: {model_params.get('colsample_bytree', 'N/A')}\n")
         f.write(f"- EARLY_STOPPING_ROUNDS: {model_params.get('early_stopping_rounds', 'N/A')}\n")
         f.write(f"- CLASS_WEIGHTS: {model_params.get('class_weights', 'N/A')}\n")
+        f.write(f"- ENABLE_CLASS_WEIGHTS_IN_TRAINING: {model_params.get('enable_class_weights_in_training', 'N/A')}\n")
         f.write(f"- ENABLE_WEIGHTED_LOSS: {model_params.get('enable_weighted_loss', 'N/A')}\n")
         f.write(f"- GAMMA: {model_params.get('gamma', 'N/A')}\n")
         f.write(f"- RANDOM_STATE: {model_params.get('random_state', 'N/A')}\n\n")
@@ -177,6 +187,11 @@ def save_training_results_to_markdown(evaluation_results, model_params, data_inf
         f.write(f"- Liczba próbek treningowych: {data_info.get('n_train', 'N/A'):,}\n")
         f.write(f"- Liczba próbek walidacyjnych: {data_info.get('n_val', 'N/A'):,}\n")
         f.write(f"- Liczba próbek testowych: {data_info.get('n_test', 'N/A'):,}\n")
+        
+        # Dodaj informację o future window
+        future_window = extract_future_window(cfg.INPUT_FILENAME)
+        f.write(f"- Future Window: {future_window}\n")
+        
         f.write(f"- Zakres czasowy treningu: {data_info.get('train_range', 'N/A')}\n")
         f.write(f"- Zakres czasowy testu: {data_info.get('test_range', 'N/A')}\n\n")
         
@@ -231,61 +246,77 @@ def save_training_results_to_markdown(evaluation_results, model_params, data_inf
                         f.write(f"{class_name}: P={precision:.3f}, R={recall:.3f}, F1={f1:.3f}\n")
                 
                 # Analiza dochodowości dla standardowych metryk
-                tp_sl_ratio = _get_tp_sl_ratio(level_desc)
-                if tp_sl_ratio and 'LONG' in class_report and 'SHORT' in class_report:
-                    long_precision = class_report['LONG'].get('precision', 0)
-                    short_precision = class_report['SHORT'].get('precision', 0)
+                tp, sl = _get_tp_sl_values(level_desc)
+                if tp and sl and conf_matrix is not None:
+                    long_profit = _calculate_profit_from_confusion_matrix(conf_matrix, tp, sl, 'LONG')
+                    short_profit = _calculate_profit_from_confusion_matrix(conf_matrix, tp, sl, 'SHORT')
+                    combined_profit = _calculate_combined_profit_from_confusion_matrix(conf_matrix, tp, sl)
                     
-                    long_profit = _calculate_profit(long_precision, tp_sl_ratio)
-                    short_profit = _calculate_profit(short_precision, tp_sl_ratio)
+                    # Oblicz precision dla wyświetlenia
+                    long_precision = class_report.get('LONG', {}).get('precision', 0) if 'LONG' in class_report else 0
+                    short_precision = class_report.get('SHORT', {}).get('precision', 0) if 'SHORT' in class_report else 0
                     
                     f.write(f"\n{level_desc} - LONG: {long_precision*100:.1f}% (dochód netto ~{long_profit:.1f}%)\n")
                     f.write(f"{level_desc} - SHORT: {short_precision*100:.1f}% (dochód netto ~{short_profit:.1f}%)\n")
+                    f.write(f"{level_desc} - ŁĄCZNY DOCHÓD: {combined_profit:.1f}%\n")
                 
-                # Symulacja wyników dla różnych progów pewności
-                # Uwaga: To jest symulacja, ponieważ nie mamy rzeczywistych predykcji z progami
-                confidence_thresholds = [30.0, 40.0, 50.0, 70.0, 80.0, 90.0]
-                
-                for threshold in confidence_thresholds:
-                    f.write(f"\nProgi pewności {threshold:.1f}%:\n")
-                    f.write("Predicted\n")
-                    f.write("Actual    LONG  SHORT  NEUTRAL\n")
-                    f.write(f"LONG      {conf_matrix[0][0]:<6} {conf_matrix[0][1]:<6} {conf_matrix[0][2]:<6}\n")
-                    f.write(f"SHORT     {conf_matrix[1][0]:<6} {conf_matrix[1][1]:<6} {conf_matrix[1][2]:<6}\n")
-                    f.write(f"NEUTRAL   {conf_matrix[2][0]:<6} {conf_matrix[2][1]:<6} {conf_matrix[2][2]:<6}\n\n")
+                # Prawdziwe wyniki dla różnych progów pewności
+                confidence_results = level_data.get('confidence_results', {})
+                if confidence_results:
+                    # Użyj progów z main.py (0.3, 0.4, 0.5, 0.6) i konwertuj na procenty
+                    confidence_thresholds = [30.0, 40.0, 50.0, 60.0]  # Konwersja z 0.3, 0.4, 0.5, 0.6
                     
-                    # Przybliżone metryki dla progów (symulacja)
-                    total_samples = sum(sum(conf_matrix))
-                    # Symulacja: przy wysokich progach pewności model przewiduje głównie NEUTRAL
-                    if threshold >= 70:
-                        # Przy wysokich progach model jest bardziej konserwatywny
-                        high_conf_samples = int(total_samples * 0.3)  # 30% próbek z wysoką pewnością
-                        f.write(f"Próbki z wysoką pewnością: {high_conf_samples:,}/{total_samples:,} (30.0%)\n")
-                        f.write(f"Accuracy: {accuracy + 0.05:.4f}\n")  # Nieco lepsza accuracy
-                    else:
-                        # Przy niskich progach wszystkie próbki
-                        high_conf_samples = total_samples
-                        f.write(f"Próbki z wysoką pewnością: {high_conf_samples:,}/{total_samples:,} (100.0%)\n")
-                        f.write(f"Accuracy: {accuracy:.4f}\n")
-                    
-                    for class_name in ['LONG', 'SHORT', 'NEUTRAL']:
-                        if class_name in class_report:
-                            precision = class_report[class_name].get('precision', 0)
-                            recall = class_report[class_name].get('recall', 0)
-                            f1 = class_report[class_name].get('f1-score', 0)
-                            f.write(f"{class_name}: P={precision:.3f}, R={recall:.3f}, F1={f1:.3f}\n")
-                    
-                    # Analiza dochodowości
-                    if tp_sl_ratio and 'LONG' in class_report and 'SHORT' in class_report:
-                        long_precision = class_report['LONG'].get('precision', 0)
-                        short_precision = class_report['SHORT'].get('precision', 0)
+                    for threshold_percent in confidence_thresholds:
+                        threshold = threshold_percent / 100.0  # Konwersja z powrotem na 0.5, 0.7, 0.8, 0.9
                         
-                        long_profit = _calculate_profit(long_precision, tp_sl_ratio)
-                        short_profit = _calculate_profit(short_precision, tp_sl_ratio)
-                        
-                        f.write(f"\n{level_desc} - LONG: {long_precision*100:.1f}% (dochód netto ~{long_profit:.1f}%)\n")
-                        f.write(f"{level_desc} - SHORT: {short_precision*100:.1f}% (dochód netto ~{short_profit:.1f}%)\n")
-                    
+                        if threshold in confidence_results and confidence_results[threshold] is not None:
+                            conf_result = confidence_results[threshold]
+                            
+                            f.write(f"\nProgi pewności {threshold_percent:.1f}%:\n")
+                            
+                            # Confusion matrix dla tego progu
+                            high_conf_conf_matrix = conf_result['confusion_matrix']
+                            if len(high_conf_conf_matrix) >= 3:
+                                f.write("Predicted\n")
+                                f.write("Actual    LONG  SHORT  NEUTRAL\n")
+                                f.write(f"LONG      {high_conf_conf_matrix[0][0]:<6} {high_conf_conf_matrix[0][1]:<6} {high_conf_conf_matrix[0][2]:<6}\n")
+                                f.write(f"SHORT     {high_conf_conf_matrix[1][0]:<6} {high_conf_conf_matrix[1][1]:<6} {high_conf_conf_matrix[1][2]:<6}\n")
+                                f.write(f"NEUTRAL   {high_conf_conf_matrix[2][0]:<6} {high_conf_conf_matrix[2][1]:<6} {high_conf_conf_matrix[2][2]:<6}\n\n")
+                            
+                            # Metryki dla tego progu
+                            f.write(f"Próbki z wysoką pewnością: {conf_result['n_high_conf']:,}/{conf_result['n_total']:,} ({conf_result['percentage']:.1f}%)\n")
+                            f.write(f"Accuracy: {conf_result['accuracy']:.4f}\n")
+                            
+                            # Metryki per klasa dla tego progu
+                            high_conf_class_report = conf_result['classification_report']
+                            for class_name in ['LONG', 'SHORT', 'NEUTRAL']:
+                                if class_name in high_conf_class_report:
+                                    precision = high_conf_class_report[class_name].get('precision', 0)
+                                    recall = high_conf_class_report[class_name].get('recall', 0)
+                                    f1 = high_conf_class_report[class_name].get('f1-score', 0)
+                                    f.write(f"{class_name}: P={precision:.3f}, R={recall:.3f}, F1={f1:.3f}\n")
+                            
+                            # Analiza dochodowości dla tego progu
+                            if tp and sl and high_conf_conf_matrix is not None:
+                                long_profit = _calculate_profit_from_confusion_matrix(high_conf_conf_matrix, tp, sl, 'LONG')
+                                short_profit = _calculate_profit_from_confusion_matrix(high_conf_conf_matrix, tp, sl, 'SHORT')
+                                combined_profit = _calculate_combined_profit_from_confusion_matrix(high_conf_conf_matrix, tp, sl)
+                                
+                                # Oblicz precision dla wyświetlenia
+                                long_precision = high_conf_class_report.get('LONG', {}).get('precision', 0) if 'LONG' in high_conf_class_report else 0
+                                short_precision = high_conf_class_report.get('SHORT', {}).get('precision', 0) if 'SHORT' in high_conf_class_report else 0
+                                
+                                f.write(f"\n{level_desc} - LONG: {long_precision*100:.1f}% (dochód netto ~{long_profit:.1f}%)\n")
+                                f.write(f"{level_desc} - SHORT: {short_precision*100:.1f}% (dochód netto ~{short_profit:.1f}%)\n")
+                                f.write(f"{level_desc} - ŁĄCZNY DOCHÓD: {combined_profit:.1f}%\n")
+                            
+                            f.write("\n" + "-" * 68 + "\n")
+                        else:
+                            f.write(f"\nProgi pewności {threshold_percent:.1f}%:\n")
+                            f.write("Brak próbek z tak wysoką pewnością\n")
+                            f.write("\n" + "-" * 68 + "\n")
+                else:
+                    f.write("\nBrak danych o progach pewności\n")
                     f.write("\n" + "-" * 68 + "\n")
             
             f.write("\n" + "+" * 68 + "\n\n")
@@ -294,22 +325,90 @@ def save_training_results_to_markdown(evaluation_results, model_params, data_inf
     return filepath
 
 
-def _get_tp_sl_ratio(level_desc):
-    """Wyciąga stosunek TP/SL z opisu poziomu."""
+def _get_tp_sl_values(level_desc):
+    """Wyciąga wartości TP i SL z opisu poziomu."""
     import re
     match = re.search(r'TP: ([\d.]+)%, SL: ([\d.]+)%', level_desc)
     if match:
         tp = float(match.group(1))
         sl = float(match.group(2))
-        return tp / sl if sl > 0 else None
-    return None
+        return tp, sl
+    return None, None
 
 
-def _calculate_profit(precision, tp_sl_ratio):
-    """Oblicza dochód netto na podstawie precyzji i stosunku TP/SL."""
-    if precision <= 0 or tp_sl_ratio <= 0:
+def _calculate_profit_from_confusion_matrix(confusion_matrix, tp, sl, signal_type):
+    """Oblicza dochód netto na podstawie confusion matrix z procentem składanym.
+    
+    Confusion matrix format:
+    Predicted
+    Actual    LONG  SHORT  NEUTRAL
+    LONG      [0][0] [0][1] [0][2]
+    SHORT     [1][0] [1][1] [1][2]
+    NEUTRAL   [2][0] [2][1] [2][2]
+    """
+    if tp <= 0 or sl <= 0 or len(confusion_matrix) < 3:
         return 0.0
     
-    # Dochód = (precyzja * TP) - ((1 - precyzja) * SL)
-    profit = (precision * tp_sl_ratio) - ((1 - precision) * 1.0)
-    return profit * 100  # Konwersja na procenty 
+    if signal_type == 'LONG':
+        # Dla LONG: kolumna 0 (przewidziane jako LONG)
+        # confusion_matrix[0][0] = rzeczywiste LONG przewidziane jako LONG (zyskowne)
+        # confusion_matrix[1][0] + confusion_matrix[2][0] = rzeczywiste SHORT/NEUTRAL przewidziane jako LONG (stratne)
+        profitable = confusion_matrix[0][0]  # Prawidłowe LONG
+        losing = confusion_matrix[1][0] + confusion_matrix[2][0]  # Błędne LONG
+        
+    elif signal_type == 'SHORT':
+        # Dla SHORT: kolumna 1 (przewidziane jako SHORT)
+        # confusion_matrix[1][1] = rzeczywiste SHORT przewidziane jako SHORT (zyskowne)
+        # confusion_matrix[0][1] + confusion_matrix[2][1] = rzeczywiste LONG/NEUTRAL przewidziane jako SHORT (stratne)
+        profitable = confusion_matrix[1][1]  # Prawidłowe SHORT
+        losing = confusion_matrix[0][1] + confusion_matrix[2][1]  # Błędne SHORT
+    else:
+        return 0.0
+    
+    total_trades = profitable + losing
+    if total_trades == 0:
+        return 0.0
+    
+    # Procent składany: Kapitał_końcowy = Kapitał_początkowy × (1 + TP/100)^profitable × (1 - SL/100)^losing
+    tp_multiplier = (1 + tp / 100) ** profitable
+    sl_multiplier = (1 - sl / 100) ** losing
+    
+    final_capital = tp_multiplier * sl_multiplier
+    
+    # Dochód netto w procentach
+    profit_percent = (final_capital - 1) * 100
+    
+    return profit_percent
+
+
+def _calculate_combined_profit_from_confusion_matrix(confusion_matrix, tp, sl):
+    """Oblicza łączny dochód netto z wszystkich transakcji LONG i SHORT razem."""
+    if tp <= 0 or sl <= 0 or len(confusion_matrix) < 3:
+        return 0.0
+    
+    # LONG transakcje (kolumna 0)
+    profitable_long = confusion_matrix[0][0]  # Prawidłowe LONG
+    losing_long = confusion_matrix[1][0] + confusion_matrix[2][0]  # Błędne LONG
+    
+    # SHORT transakcje (kolumna 1)
+    profitable_short = confusion_matrix[1][1]  # Prawidłowe SHORT
+    losing_short = confusion_matrix[0][1] + confusion_matrix[2][1]  # Błędne SHORT
+    
+    # Łączne liczby
+    total_profitable = profitable_long + profitable_short
+    total_losing = losing_long + losing_short
+    total_trades = total_profitable + total_losing
+    
+    if total_trades == 0:
+        return 0.0
+    
+    # Łączny procent składany
+    tp_multiplier = (1 + tp / 100) ** total_profitable
+    sl_multiplier = (1 - sl / 100) ** total_losing
+    
+    final_capital = tp_multiplier * sl_multiplier
+    
+    # Łączny dochód netto w procentach
+    combined_profit_percent = (final_capital - 1) * 100
+    
+    return combined_profit_percent 

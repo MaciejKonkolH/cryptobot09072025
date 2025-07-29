@@ -1,17 +1,18 @@
 """
-Signal Generator - Generowanie sygnałów ML per para
+Signal Generator - Generowanie sygnałów XGBoost per para
 
-OPTIMIZED VERSION V2.0:
-- Batch predictions (1000x faster)
-- Memory cleanup system
-- GPU memory management
-- Progress tracking z ETA
-- Hybrid mode: batch dla backtest, single dla live
+OPTIMIZED VERSION V3.0:
+- XGBoost Multi-Output predictions
+- 37 cech z dataframe
+- 5 poziomów TP/SL → 1 wybrany poziom
+- Batch predictions dla backtest
+- Single predictions dla live
 
 Odpowiedzialny za:
-- Generowanie sygnałów ML per para z różnymi window_size
-- Przygotowanie sekwencji dla modeli
-- Normalizacja danych przez scaler
+- Generowanie sygnałów XGBoost per para
+- Obsługa 37 cech z dataframe
+- Wybór poziomu TP/SL z konfiguracji
+- Normalizacja danych przez RobustScaler
 - Error handling w przypadku problemów z predykcją
 """
 
@@ -19,20 +20,32 @@ import logging
 import numpy as np
 import pandas as pd
 from typing import Dict, Tuple, List
-import tensorflow as tf
 
 logger = logging.getLogger(__name__)
 
 class SignalGenerator:
     """
     Klasa odpowiedzialna za generowanie sygnałów transakcyjnych na podstawie
-    przewidywań modelu ML.
+    przewidywań modelu XGBoost.
     """
-    def __init__(self):
-        self.short_threshold = 0.5
-        self.long_threshold = 0.5
-        self.hold_threshold = 0.5
-        self._setup_gpu()
+    def __init__(self, config: dict = None):
+        self.config = config or {}
+        self.short_threshold = 0.4
+        self.long_threshold = 0.4
+        self.hold_threshold = 0.4
+        
+
+        
+        # Lista 37 cech
+        self.feature_columns = [
+            'price_trend_30m', 'price_trend_2h', 'price_trend_6h', 'price_strength', 'price_consistency_score',
+            'price_vs_ma_60', 'price_vs_ma_240', 'ma_trend', 'price_volatility_rolling',
+            'volume_trend_1h', 'volume_intensity', 'volume_volatility_rolling', 'volume_price_correlation', 'volume_momentum',
+            'spread_tightness', 'depth_ratio_s1', 'depth_ratio_s2', 'depth_momentum',
+            'market_trend_strength', 'market_trend_direction', 'market_choppiness', 'bollinger_band_width', 'market_regime',
+            'volatility_regime', 'volatility_percentile', 'volatility_persistence', 'volatility_momentum', 'volatility_of_volatility', 'volatility_term_structure',
+            'volume_imbalance', 'weighted_volume_imbalance', 'volume_imbalance_trend', 'price_pressure', 'weighted_price_pressure', 'price_pressure_momentum', 'order_flow_imbalance', 'order_flow_trend'
+        ]
 
     def set_thresholds(self, short_threshold: float, long_threshold: float, hold_threshold: float):
         self.short_threshold = short_threshold
@@ -40,80 +53,92 @@ class SignalGenerator:
         self.hold_threshold = hold_threshold
         logger.info(f"✅ Updated ML thresholds: SHORT={self.short_threshold}, LONG={self.long_threshold}, HOLD={self.hold_threshold}")
 
-    def generate_signal(self, model, scaler, features: np.ndarray) -> Dict:
+    def generate_signal(self, model, scaler, dataframe: pd.DataFrame, selected_model_index: int = 2) -> Dict:
         """
-        Generuje pojedynczy sygnał dla jednej tablicy cech (120, 8).
+        Generuje pojedynczy sygnał dla ostatniego wiersza dataframe z 37 cechami.
         """
-        if features.ndim == 1:
-            features = features.reshape(1, -1)
+        # Pobierz ostatni wiersz z cechami
+        if not all(col in dataframe.columns for col in self.feature_columns):
+            logger.error("❌ Brak wymaganych cech w dataframe")
+            return {'signal': 'hold', 'confidence': 0.0, 'probabilities': [0.33, 0.33, 0.34]}
         
-        scaled_features = scaler.transform(features)
+        features = dataframe[self.feature_columns].iloc[-1].values
         
-        # LSTM oczekuje (batch_size, timesteps, features)
-        if scaled_features.ndim == 2:
-             scaled_features = np.reshape(scaled_features, (1, scaled_features.shape[0], scaled_features.shape[1]))
-
-        probabilities = model.predict(scaled_features)[0]
+        # Skaluj cechy - przekaż nazwy cech żeby uniknąć ostrzeżenia
+        features_df = pd.DataFrame(features.reshape(1, -1), columns=self.feature_columns)
+        scaled_features = scaler.transform(features_df)
         
-        signal, confidence = self._get_signal_from_probabilities(probabilities)
+        # Predykcja XGBoost (wybrany model z MultiOutputClassifier)
+        if hasattr(model, 'estimators_') and len(model.estimators_) > selected_model_index:
+            # MultiOutputClassifier - użyj wybranego modelu
+            selected_model = model.estimators_[selected_model_index]
+            probabilities = selected_model.predict_proba(scaled_features)
+        else:
+            # Pojedynczy model
+            probabilities = model.predict_proba(scaled_features)
+        
+        # Pobierz prawdopodobieństwa dla pierwszej (i jedynej) próbki
+        probs = probabilities[0]
+        
+        signal, confidence = self._get_signal_from_probabilities(probs)
         
         return {
             'signal': signal,
             'confidence': confidence,
-            'probabilities': probabilities
+            'probabilities': probs
         }
 
-    def generate_signals_for_batch(self, model, scaler, features_list: list) -> list:
+    def generate_signals_for_batch(self, model, scaler, dataframe: pd.DataFrame, selected_model_index: int = 2) -> list:
         """
-        Generuje sygnały dla całej paczki (listy) danych.
+        Generuje sygnały dla całego dataframe.
         Zoptymalizowane pod kątem wydajności w backtestingu.
         """
-        if not features_list:
+        if dataframe.empty or not all(col in dataframe.columns for col in self.feature_columns):
+            logger.error("❌ Brak wymaganych cech w dataframe")
             return []
 
-        feature_array_3d = np.array(features_list)
+        # Pobierz wszystkie cechy
+        features = dataframe[self.feature_columns].values
         
-        n_samples, n_timesteps, n_features = feature_array_3d.shape
-        feature_array_2d = feature_array_3d.reshape((n_samples * n_timesteps, n_features))
+        # Skaluj cechy - przekaż nazwy cech żeby uniknąć ostrzeżenia
+        features_df = pd.DataFrame(features, columns=self.feature_columns)
+        scaled_features = scaler.transform(features_df)
         
-        scaled_features_2d = scaler.transform(feature_array_2d)
-        
-        scaled_features_3d = scaled_features_2d.reshape((n_samples, n_timesteps, n_features))
-        
-        all_probabilities = model.predict(scaled_features_3d, batch_size=512, verbose=0)
+        # Predykcja XGBoost (wybrany model z MultiOutputClassifier)
+        if hasattr(model, 'estimators_') and len(model.estimators_) > selected_model_index:
+            # MultiOutputClassifier - użyj wybranego modelu
+            selected_model = model.estimators_[selected_model_index]
+            probabilities = selected_model.predict_proba(scaled_features)
+        else:
+            # Pojedynczy model
+            probabilities = model.predict_proba(scaled_features)
         
         results = []
-        for probabilities in all_probabilities:
-            signal, confidence = self._get_signal_from_probabilities(probabilities)
+        for prob in probabilities:
+            signal, confidence = self._get_signal_from_probabilities(prob)
             results.append({
                 'signal': signal,
                 'confidence': confidence,
-                'probabilities': probabilities
+                'probabilities': prob
             })
             
         return results
 
     def _get_signal_from_probabilities(self, probabilities: np.ndarray) -> Tuple[str, float]:
         """Logika konwersji prawdopodobieństw na sygnał."""
-        short_prob, hold_prob, long_prob = probabilities
+        long_prob, short_prob, neutral_prob = probabilities  # XGBoost: 0=LONG, 1=SHORT, 2=NEUTRAL
         
         best_class = np.argmax(probabilities)
         confidence = probabilities[best_class]
 
-        if best_class == 0 and confidence >= self.short_threshold:
-            return "short", confidence
-        elif best_class == 2 and confidence >= self.long_threshold:
-            return "long", confidence
+        if best_class == 0 and confidence >= self.long_threshold:
+            return "LONG", confidence
+        elif best_class == 1 and confidence >= self.short_threshold:
+            return "SHORT", confidence
         else:
-            return "hold", hold_prob
+            return "NEUTRAL", neutral_prob
 
     def _setup_gpu(self):
         """Konfiguruje pamięć GPU, aby zapobiec błędom OOM."""
-        try:
-            gpus = tf.config.experimental.list_physical_devices('GPU')
-            if gpus:
-                for gpu in gpus:
-                    tf.config.experimental.set_memory_growth(gpu, True)
-                logger.info(f"✅ GPU memory growth enabled for {len(gpus)} GPU(s)")
-        except Exception as e:
-            logger.error(f"❌ Error setting up GPU: {e}") 
+        # XGBoost nie wymaga GPU setup
+        logger.info("✅ XGBoost model - no GPU setup required") 

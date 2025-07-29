@@ -1,25 +1,26 @@
 """
-Model Loader - Ładowanie modeli ML dla Enhanced ML Strategy
+Model Loader - Ładowanie modeli XGBoost dla Enhanced ML Strategy
 
 Odpowiedzialny za:
-- Ładowanie modeli .h5 format z nowej struktury inputs/ (zmienione z .keras na .h5)
+- Ładowanie modeli XGBoost .pkl format z nowej struktury inputs/
 - Ładowanie scalerów i metadanych
-- Dynamiczny window_size z metadata.json
+- Obsługa 37 cech i 5 poziomów TP/SL
 - Error handling per para
 - Cache modeli w pamięci
 
-NOWA STRUKTURA v2.1 (ZAKTUALIZOWANA DLA H5):
+NOWA STRUKTURA v3.0 (ZAKTUALIZOWANA DLA XGBOOST):
 user_data/strategies/inputs/BTCUSDT/
-├── best_model.h5      # Zmienione z .keras na .h5 (fix dla TensorFlow 2.15.0 LSTM bug)
-├── scaler.pkl  
-└── metadata.json
+├── xgboost_model.pkl      # Model XGBoost Multi-Output
+├── scaler.pkl             # RobustScaler
+└── metadata.json          # Metadane (37 cech, 5 poziomów TP/SL)
 """
 
 import os
 import json
 import logging
 import joblib
-import tensorflow as tf
+import pickle
+import numpy as np
 from typing import Dict, Optional, Tuple, Any, List
 from pathlib import Path
 
@@ -55,7 +56,7 @@ class ModelLoader:
         
     def load_model_for_pair(self, pair: str, model_dir: str = None) -> Tuple[Optional[Any], Optional[Any], Optional[Dict]]:
         """
-        Ładuje model, scaler i metadata dla konkretnej pary
+        Ładuje model XGBoost, scaler i metadata dla konkretnej pary
         
         Args:
             pair: Nazwa pary (np. "BTC/USDT")
@@ -73,7 +74,7 @@ class ModelLoader:
         try:
             # Sprawdź cache
             if cache_key in self.models_cache:
-                logger.debug(f"📋 Using cached model for {pair}")
+                logger.debug(f"📋 Using cached XGBoost model for {pair}")
                 return (
                     self.models_cache[cache_key],
                     self.scalers_cache[cache_key], 
@@ -92,8 +93,8 @@ class ModelLoader:
             if metadata is None:
                 return None, None, None
             
-            # Załaduj model .h5
-            model = self._load_keras_model(artifacts_dir, pair)
+            # Załaduj model XGBoost
+            model = self._load_xgboost_model(artifacts_dir, pair)
             if model is None:
                 return None, None, None
             
@@ -111,8 +112,9 @@ class ModelLoader:
             self.scalers_cache[cache_key] = scaler
             self.metadata_cache[cache_key] = metadata
             
-            window_size = self._extract_window_size(metadata)
-            logger.info(f"✅ {pair}: Model loaded successfully from {artifacts_dir} (window_size: {window_size})")
+            logger.info(f"✅ {pair}: XGBoost model loaded successfully from {artifacts_dir}")
+            logger.info(f"   - Features: {metadata.get('n_features', 'N/A')}")
+
             
             return model, scaler, metadata
             
@@ -140,25 +142,79 @@ class ModelLoader:
             logger.error(f"❌ {pair}: Error loading metadata: {e}")
             return None
     
-    def _load_keras_model(self, artifacts_dir: str, pair: str) -> Optional[Any]:
-        """Ładuje best_model.h5 (ZMIENIONY FORMAT Z KERAS NA H5)"""
+    def _load_xgboost_model(self, artifacts_dir: str, pair: str) -> Optional[Any]:
+        """Ładuje pojedynczy model XGBoost z pliku JSON na podstawie selected_model_index"""
         try:
-            # 🔥 ZMIANA: best_model.h5 zamiast best_model.keras (fix dla TensorFlow 2.15.0 LSTM bug)
-            model_filename = "best_model.h5"
-            model_path = os.path.join(artifacts_dir, model_filename)
+            import xgboost as xgb
+            import json
             
-            if not os.path.exists(model_path):
-                logger.error(f"❌ {pair}: Model file not found: {model_path}")
+            # Sprawdź czy istnieje metadata.json
+            metadata_path = os.path.join(artifacts_dir, "metadata.json")
+            if not os.path.exists(metadata_path):
+                logger.error(f"❌ {pair}: metadata.json not found in {artifacts_dir}")
                 return None
             
-            # Załaduj model .h5 z opcją compile=False, aby uniknąć błędów kompatybilności
-            model = tf.keras.models.load_model(model_path, compile=False)
+            # Załaduj metadata
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
             
-            logger.debug(f"✅ {pair}: H5 model loaded from {model_filename}")
-            return model
+            # Sprawdź czy to nowy format (osobne modele)
+            if metadata.get('model_type') == 'xgboost_individual':
+                # Nowy format: pojedynczy model JSON
+                model_filename = metadata.get('model_filename')
+                if not model_filename:
+                    logger.error(f"❌ {pair}: model_filename not found in metadata")
+                    return None
+                
+                model_path = os.path.join(artifacts_dir, model_filename)
+                if not os.path.exists(model_path):
+                    logger.error(f"❌ {pair}: Model file not found: {model_path}")
+                    return None
+                
+                logger.info(f"🔄 {pair}: Loading individual XGBoost model: {model_filename}")
+                
+                # Załaduj model
+                model = xgb.Booster()
+                model.load_model(model_path)
+                
+                # Stwórz wrapper kompatybilny z sklearn
+                class IndividualXGBoostWrapper:
+                    def __init__(self, model, feature_names):
+                        self.model = model
+                        self.feature_names = feature_names
+                        self.classes_ = np.array([0, 1, 2])  # LONG, SHORT, NEUTRAL
+                    
+                    def predict_proba(self, X):
+                        import xgboost as xgb
+                        dtest = xgb.DMatrix(X, feature_names=self.feature_names)
+                        probs = self.model.predict(dtest)
+                        return probs.reshape(-1, 3)
+                    
+                    def predict(self, X):
+                        probs = self.predict_proba(X)
+                        return np.argmax(probs, axis=1)
+                
+                wrapper = IndividualXGBoostWrapper(model, metadata.get('feature_names', []))
+                logger.info(f"✅ {pair}: Individual XGBoost model loaded successfully")
+                logger.info(f"  - Model: {metadata.get('model_description', 'Unknown')}")
+                logger.info(f"  - Features: {len(metadata.get('feature_names', []))}")
+                return wrapper
+            
+            else:
+                # Stary format: sprawdź czy istnieje model.pkl (MultiOutputClassifier)
+                base_model_path = os.path.join(artifacts_dir, "model.pkl")
+                if os.path.exists(base_model_path):
+                    logger.info(f"🔄 {pair}: Loading XGBoost model from pickle file (legacy format)...")
+                    with open(base_model_path, 'rb') as f:
+                        model = pickle.load(f)
+                    logger.debug(f"✅ {pair}: XGBoost model loaded from pickle")
+                    return model
+                else:
+                    logger.error(f"❌ {pair}: No compatible model files found in {artifacts_dir}")
+                    return None
             
         except Exception as e:
-            logger.error(f"❌ {pair}: Error loading H5 model: {e}")
+            logger.error(f"❌ {pair}: Error loading XGBoost model: {e}")
             return None
     
     def _load_scaler(self, artifacts_dir: str, pair: str) -> Optional[Any]:
@@ -189,53 +245,34 @@ class ModelLoader:
             return None
     
     def _validate_model_compatibility(self, metadata: Dict, pair: str) -> bool:
-        """Waliduje kompatybilność modelu z strategią"""
+        """Waliduje kompatybilność modelu XGBoost z strategią"""
         try:
-            # 🔥 OBSŁUGA NOWEJ STRUKTURY METADATA.JSON
-            
-            # Sprawdź czy ma training_config (nowa struktura)
-            if 'training_config' in metadata:
-                # Nowa struktura z training_config.sequence_length
-                training_config = metadata['training_config']
-                
-                if 'sequence_length' not in training_config:
-                    logger.error(f"❌ {pair}: Missing sequence_length in training_config")
+            # Sprawdź czy ma wymagane pola
+            required_fields = ['n_features', 'feature_names', 'model_type']
+            for field in required_fields:
+                if field not in metadata:
+                    logger.error(f"❌ {pair}: Missing required field in metadata: {field}")
                     return False
-                
-                window_size = training_config['sequence_length']
-                num_features = 8  # Default dla strategii (z features_shape można sprawdzić)
-                
-                # Sprawdź data_info jeśli dostępne
-                if 'data_info' in metadata and 'features_shape' in metadata['data_info']:
-                    features_shape = metadata['data_info']['features_shape']
-                    if len(features_shape) >= 2:
-                        num_features = features_shape[1]
-                
-            else:
-                # Stara struktura z input_shape (backward compatibility)
-                required_fields = ['input_shape']
-                for field in required_fields:
-                    if field not in metadata:
-                        logger.error(f"❌ {pair}: Missing required metadata field: {field}")
-                        return False
-                
-                input_shape = metadata['input_shape']
-                if not isinstance(input_shape, list) or len(input_shape) != 2:
-                    logger.error(f"❌ {pair}: Invalid input_shape format: {input_shape}")
-                    return False
-                
-                window_size, num_features = input_shape
             
-            # Waliduj window_size
-            if window_size < 60 or window_size > 240:
-                logger.warning(f"⚠️ {pair}: Unusual window_size: {window_size} (expected 60-240)")
-            
-            # Waliduj num_features (strategia oczekuje 8 cech)
-            if num_features != 8:
-                logger.error(f"❌ {pair}: Invalid num_features: {num_features} (expected 8)")
+            # Sprawdź typ modelu
+            model_type = metadata.get('model_type')
+            if model_type not in ['xgboost_individual', 'xgboost_multioutput']:
+                logger.error(f"❌ {pair}: Unsupported model type: {model_type}")
                 return False
             
-            logger.debug(f"✅ {pair}: Model compatibility validated (window: {window_size}, features: {num_features})")
+            # Sprawdź liczbę cech (powinno być 37)
+            n_features = metadata.get('n_features', 0)
+            if n_features != 37:
+                logger.error(f"❌ {pair}: Expected 37 features, got {n_features}")
+                return False
+            
+            # Dla nowego formatu sprawdź czy ma model_filename
+            if model_type == 'xgboost_individual':
+                if 'model_filename' not in metadata:
+                    logger.error(f"❌ {pair}: Missing model_filename in individual model metadata")
+                    return False
+            
+            logger.debug(f"✅ {pair}: Model compatibility validated (type: {model_type})")
             return True
             
         except Exception as e:

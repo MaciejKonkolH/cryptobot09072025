@@ -163,61 +163,36 @@ class DataFrameExtender:
     
     def get_features_for_backtest_batch(self, pair: str, timestamps: List[pd.Timestamp]) -> Dict[pd.Timestamp, Optional[np.ndarray]]:
         """
-        🚀 VECTORIZED WERSJA - oblicza wszystkie cechy naraz dla całego datasetu
-        Dramatycznie szybsza niż poprzednia wersja batch.
-        
-        Strategia:
-        1. Wczytaj pełne dane historyczne
-        2. Oblicz MA43200 i MA1440 RAZ dla całego datasetu
-        3. Oblicz WSZYSTKIE 8 cech RAZ dla całego datasetu (vectorized)
-        4. Dla każdego timestamp tylko wytnij gotowe okno
+        🚀 NOWA WERSJA - używa danych z raw_validated.feather z 37 cechami
+        Zamiast generować własne cechy, używa pre-obliczonych cech z feature_calculator_ohlc_snapshot
         """
         logger.info(f"🚀 {pair}: Rozpoczynanie VECTORIZED processing dla {len(timestamps)} timestampów...")
         
-        # Krok 1: Wczytanie pełnych danych historycznych
+        # Krok 1: Wczytanie danych z raw_validated.feather
         raw_data = self._load_raw_data_cached(pair)
         if raw_data is None:
             logger.error(f"❌ {pair}: Brak danych historycznych.")
             return {}
         
-        # Krok 2: Obliczenie MA43200 i MA1440 RAZ dla całego datasetu
-        logger.info(f"💾 {pair}: Obliczanie MA43200 i MA1440 dla {len(raw_data)} świec...")
-        start_time = pd.Timestamp.now()
+        # Krok 2: Sprawdzenie czy dane zawierają wymagane cechy
+        required_features = [
+            'price_trend_30m', 'price_trend_2h', 'price_trend_6h', 'price_strength', 'price_consistency_score',
+            'price_vs_ma_60', 'price_vs_ma_240', 'ma_trend', 'price_volatility_rolling',
+            'volume_trend_1h', 'volume_intensity', 'volume_volatility_rolling', 'volume_price_correlation', 'volume_momentum',
+            'spread_tightness', 'depth_ratio_s1', 'depth_ratio_s2', 'depth_momentum',
+            'market_trend_strength', 'market_trend_direction', 'market_choppiness', 'bollinger_band_width', 'market_regime',
+            'volatility_regime', 'volatility_percentile', 'volatility_persistence', 'volatility_momentum', 'volatility_of_volatility', 'volatility_term_structure',
+            'volume_imbalance', 'weighted_volume_imbalance', 'volume_imbalance_trend', 'price_pressure', 'weighted_price_pressure', 'price_pressure_momentum', 'order_flow_imbalance', 'order_flow_trend'
+        ]
         
-        # Oblicz długie średnie dla całego datasetu
-        raw_data['ma43200'] = raw_data['close'].rolling(window=43200, min_periods=43200).mean()
-        raw_data['volume_ma43200'] = raw_data['volume'].rolling(window=43200, min_periods=43200).mean()
-        raw_data['ma1440'] = raw_data['close'].rolling(window=1440, min_periods=1440).mean()
-        raw_data['volume_ma1440'] = raw_data['volume'].rolling(window=1440, min_periods=1440).mean()
+        missing_features = [f for f in required_features if f not in raw_data.columns]
+        if missing_features:
+            logger.error(f"❌ {pair}: Brakujące cechy: {missing_features}")
+            return {}
         
-        ma_time = (pd.Timestamp.now() - start_time).total_seconds()
-        logger.info(f"✅ {pair}: MA obliczone w {ma_time:.1f}s.")
+        logger.info(f"✅ {pair}: Wszystkie 37 cech dostępne. Rozpoczynanie przetwarzania...")
         
-        # Krok 3: Obliczenie WSZYSTKICH 8 cech RAZ dla całego datasetu (VECTORIZED!)
-        logger.info(f"⚡ {pair}: Obliczanie wszystkich cech vectorized dla {len(raw_data)} świec...")
-        start_time = pd.Timestamp.now()
-        
-        # Stosunki (vectorized)
-        raw_data['price_to_ma1440'] = raw_data['close'] / raw_data['ma1440']
-        raw_data['price_to_ma43200'] = raw_data['close'] / raw_data['ma43200']
-        raw_data['volume_to_ma1440'] = raw_data['volume'] / raw_data['volume_ma1440']
-        raw_data['volume_to_ma43200'] = raw_data['volume'] / raw_data['volume_ma43200']
-
-        # Zmiany procentowe (vectorized)
-        close_prev = raw_data['close'].shift(1)
-        raw_data['high_change'] = ((raw_data['high'] - close_prev) / close_prev * 100)
-        raw_data['low_change'] = ((raw_data['low'] - close_prev) / close_prev * 100)
-        raw_data['close_change'] = raw_data['close'].pct_change() * 100
-        raw_data['volume_change'] = raw_data['volume'].pct_change() * 100
-        
-        # Obsługa NaN/inf (vectorized)
-        raw_data[self.FEATURE_COLUMNS] = raw_data[self.FEATURE_COLUMNS].replace([np.inf, -np.inf], np.nan)
-        raw_data[self.FEATURE_COLUMNS] = raw_data[self.FEATURE_COLUMNS].fillna(0)
-        
-        features_time = (pd.Timestamp.now() - start_time).total_seconds()
-        logger.info(f"✅ {pair}: Wszystkie cechy obliczone w {features_time:.1f}s. Rozpoczynanie wycinania okien...")
-        
-        # Krok 4: Szybkie wycinanie okien z pre-obliczonymi cechami
+        # Krok 3: Przetwarzanie timestampów
         all_features = {}
         processed_count = 0
         failed_count = 0
@@ -227,56 +202,53 @@ class DataFrameExtender:
         
         for i, timestamp in enumerate(timestamps):
             try:
-                # CORRECTED LOGIC: Shift the window back by one minute to prevent lookahead bias.
-                # For a decision at timestamp T, we use the feature window ending at T-1.
-                target_timestamp = timestamp - pd.Timedelta(minutes=1)
-                
-                # Find the position of the target timestamp directly in the index.
-                end_idx_pos = raw_data.index.get_loc(target_timestamp)
-                
-                # Determine the starting position of the 120-candle window.
-                start_idx_pos = end_idx_pos - 120 + 1
-                
-                if start_idx_pos < 0:
-                    all_features[timestamp] = None
-                    failed_count += 1
-                    continue
-                
-                # Wytnij okno za pomocą iloc - jest to znacznie szybsze
-                window_data = raw_data.iloc[start_idx_pos:end_idx_pos + 1]
-                
-                if len(window_data) != 120:
-                    all_features[timestamp] = None
-                    failed_count += 1
-                    continue
+                # Znajdź wiersz dla tego timestampu
+                if timestamp in raw_data.index:
+                    row_data = raw_data.loc[timestamp]
                     
-                # Konwersja do NumPy
-                final_features = window_data[self.FEATURE_COLUMNS].values
-                
-                if not np.isfinite(final_features).all():
+                    # Wybierz tylko wymagane cechy
+                    features = row_data[required_features].values
+                    
+                    # Konwertuj na float64 jeśli to nie jest już float
+                    features = features.astype(np.float64)
+                    
+                    # Sprawdź czy wszystkie cechy są skończone
+                    if np.isfinite(features).all():
+                        all_features[timestamp] = features
+                        processed_count += 1
+                    else:
+                        all_features[timestamp] = None
+                        failed_count += 1
+                else:
                     all_features[timestamp] = None
                     failed_count += 1
-                else:
-                    all_features[timestamp] = final_features
-                    processed_count += 1
-
-            except KeyError:
+                    if i < 5:  # Debug tylko pierwszych 5 błędów
+                        logger.warning(f"🔍 DEBUG {pair}: Timestamp {timestamp} nie znaleziony w raw_data.index")
+                        logger.warning(f"🔍 DEBUG {pair}: raw_data.index range: {raw_data.index[0]} do {raw_data.index[-1]}")
+                        logger.warning(f"🔍 DEBUG {pair}: raw_data.index type: {type(raw_data.index[0])}")
+                        logger.warning(f"🔍 DEBUG {pair}: timestamp type: {type(timestamp)}")
+                    
+            except Exception as e:
                 all_features[timestamp] = None
                 failed_count += 1
+                if i < 5:  # Debug tylko pierwszych 5 błędów
+                    logger.warning(f"❌ {pair}: Błąd dla timestamp {timestamp}: {e}")
             
-            # Logowanie postępu co określony czas lub co X iteracji
-            now = pd.Timestamp.now()
-            if (now - last_log_time).total_seconds() > 20 or (i + 1) % 50000 == 0:
-                elapsed = (now - start_time_total).total_seconds()
-                speed = (i + 1) / elapsed if elapsed > 0 else 0
-                logger.info(f"📊 {pair}: Przetworzono {i + 1}/{total_count} ({(i + 1) / total_count:.1%}) - {speed:.0f} timestamps/s")
-                last_log_time = now
-
+            # Logowanie postępu
+            current_time = pd.Timestamp.now()
+            if (current_time - last_log_time).total_seconds() > 5 or i % max(1, total_count // 10) == 0:
+                progress_pct = (i / total_count) * 100
+                elapsed_time = (current_time - start_time_total).total_seconds()
+                estimated_total = elapsed_time / (i + 1) * total_count if i > 0 else 0
+                remaining_time = estimated_total - elapsed_time
+                
+                logger.info(f"📊 {pair}: Przetworzono {processed_count}/{total_count} ({progress_pct:.1f}%) - "
+                           f"Czas: {elapsed_time:.0f}s, Pozostało: {remaining_time:.0f}s")
+                last_log_time = current_time
+        
         total_time = (pd.Timestamp.now() - start_time_total).total_seconds()
-        avg_speed = total_count / total_time if total_time > 0 else 0
-
-        logger.info(f"✅ {pair}: VECTORIZED processing zakończony w {total_time:.1f}s ({avg_speed:.0f} timestamps/s)")
-        logger.info(f"📊 {pair}: Sukces: {processed_count}/{total_count} ({processed_count / total_count:.1%}), Błędy: {failed_count}")
+        logger.info(f"✅ {pair}: VECTORIZED processing zakończony w {total_time:.1f}s ({total_count/total_time:.0f} timestamps/s)")
+        logger.info(f"📊 {pair}: Sukces: {processed_count}/{total_count} ({processed_count/total_count*100:.1f}%), Błędy: {failed_count}")
         
         return all_features
 
@@ -345,19 +317,30 @@ class DataFrameExtender:
     @lru_cache(maxsize=10)
     def _load_raw_data_cached(self, pair: str) -> Optional[pd.DataFrame]:
         """
-        Wczytuje i cache'uje plik _raw_validated dla danej pary.
+        Wczytuje i cache'uje plik z cechami dla danej pary.
         """
         logger.info(f"💾 {pair}: Loading and caching raw_validated file...")
         filepath = self._get_raw_validated_path(pair)
         if not filepath.exists():
-            logger.error(f"❌ KRYTYCZNY BŁĄD: Nie znaleziono pliku danych historycznych: {filepath}")
-            logger.error("Upewnij się, że plik `_raw_validated.feather` istnieje i został wygenerowany przez moduł `validation_and_labeling`.")
+            logger.error(f"❌ KRYTYCZNY BŁĄD: Nie znaleziono pliku z cechami: {filepath}")
+            logger.error("Upewnij się, że plik `_raw_validated.feather` istnieje i został skopiowany z feature_calculator_ohlc_snapshot.")
             return None
         
         try:
             data = pd.read_feather(filepath)
-            data['date'] = pd.to_datetime(data['date'], utc=True)
-            data.set_index('date', inplace=True)
+            
+            # Sprawdź czy kolumna timestamp istnieje
+            if 'timestamp' in data.columns:
+                # Konwertuj timestamp na UTC timezone
+                data['date'] = pd.to_datetime(data['timestamp'], utc=True)
+                data.set_index('date', inplace=True)
+            elif 'date' in data.columns:
+                # Konwertuj date na UTC timezone
+                data['date'] = pd.to_datetime(data['date'], utc=True)
+                data.set_index('date', inplace=True)
+            else:
+                logger.error(f"❌ Brak kolumny timestamp lub date w pliku {filepath}")
+                return None
             
             if not data.index.is_monotonic_increasing:
                 data = data.sort_index()
@@ -376,11 +359,11 @@ class DataFrameExtender:
                 "Upewnij się, że strategia wywołuje `set_resolved_datadir()`."
             )
 
-        base_path = self._resolved_datadir
-        # KOREKTA: Zamieniamy ':' na '_', a nie usuwamy go.
+        # NOWA LOGIKA: Używamy pliku z cechami z feature_calculator_ohlc_snapshot
+        base_path = Path(self.config.get('user_data_dir', 'user_data')) / 'strategies' / 'inputs'
         normalized_pair = pair.replace('/', '_').replace(':', '_')
-        filename = f"{normalized_pair}-1m-futures.feather"
-        full_path = base_path / 'futures' / filename
+        filename = f"{normalized_pair}_raw_validated.feather"
+        full_path = base_path / filename
         
         return full_path
 
