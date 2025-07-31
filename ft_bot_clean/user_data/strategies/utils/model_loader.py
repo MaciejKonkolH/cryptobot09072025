@@ -2,17 +2,17 @@
 Model Loader - Ładowanie modeli XGBoost dla Enhanced ML Strategy
 
 Odpowiedzialny za:
-- Ładowanie modeli XGBoost .pkl format z nowej struktury inputs/
+- Ładowanie pojedynczego modelu XGBoost z pliku JSON
 - Ładowanie scalerów i metadanych
-- Obsługa 37 cech i 5 poziomów TP/SL
+- Obsługa 37 cech
 - Error handling per para
 - Cache modeli w pamięci
 
-NOWA STRUKTURA v3.0 (ZAKTUALIZOWANA DLA XGBOOST):
+NOWA STRUKTURA v4.0 (POJEDYNCZY MODEL):
 user_data/strategies/inputs/BTCUSDT/
-├── xgboost_model.pkl      # Model XGBoost Multi-Output
-├── scaler.pkl             # RobustScaler
-└── metadata.json          # Metadane (37 cech, 5 poziomów TP/SL)
+├── model_tp1p2_sl0p4.json  # Pojedynczy model XGBoost
+├── scaler.pkl              # RobustScaler
+└── metadata.json           # Metadane (37 cech, opis modelu)
 """
 
 import os
@@ -143,7 +143,7 @@ class ModelLoader:
             return None
     
     def _load_xgboost_model(self, artifacts_dir: str, pair: str) -> Optional[Any]:
-        """Ładuje pojedynczy model XGBoost z pliku JSON na podstawie selected_model_index"""
+        """Ładuje pojedynczy model XGBoost z pliku JSON na podstawie metadata.json"""
         try:
             import xgboost as xgb
             import json

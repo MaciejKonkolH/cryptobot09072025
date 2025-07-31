@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 import numpy as np
+import pandas as pd
 from pandas import DataFrame, Series, concat, to_datetime
 
 from freqtrade.constants import BACKTEST_BREAKDOWNS, DATETIME_PRINT_FORMAT
@@ -461,7 +462,20 @@ def generate_strategy_stats(
     if not isinstance(results, DataFrame):
         return {}
     config = content["config"]
-    max_open_trades = min(config["max_open_trades"], len(pairlist))
+    
+    # Calculate real maximum concurrent trades from actual trade data
+    max_open_trades_real = calculate_max_concurrent_trades(results)
+    
+    # For position stacking, adjust theoretical max_open_trades calculation
+    if config.get("position_stacking", False):
+        max_positions_per_pair = config.get("max_positions_per_pair", 1)
+        max_open_trades_theoretical = min(config["max_open_trades"], len(pairlist) * max_positions_per_pair)
+    else:
+        max_open_trades_theoretical = min(config["max_open_trades"], len(pairlist))
+    
+    # Use the real value if available, otherwise fall back to theoretical
+    max_open_trades = max_open_trades_real if max_open_trades_real > 0 else max_open_trades_theoretical
+    
     start_balance = get_dry_run_wallet(config)
     stake_currency = config["stake_currency"]
 
@@ -705,3 +719,44 @@ def generate_backtest_stats(
     result["strategy_comparison"] = strategy_results
 
     return result
+
+
+def calculate_max_concurrent_trades(results: DataFrame) -> int:
+    """
+    Calculate the maximum number of concurrent trades from backtest results.
+    
+    Args:
+        results: DataFrame with trade results containing 'open_date' and 'close_date'
+    
+    Returns:
+        Maximum number of concurrent trades
+    """
+    if results.empty:
+        return 0
+    
+    # Create events for trade opening and closing
+    events = []
+    
+    for _, trade in results.iterrows():
+        # Convert to datetime if they're strings
+        open_time = pd.to_datetime(trade['open_date']) if isinstance(trade['open_date'], str) else trade['open_date']
+        close_time = pd.to_datetime(trade['close_date']) if isinstance(trade['close_date'], str) else trade['close_date']
+        
+        events.append({'time': open_time, 'type': 'open'})
+        events.append({'time': close_time, 'type': 'close'})
+    
+    # Sort events by time
+    events = sorted(events, key=lambda x: x['time'])
+    
+    # Calculate concurrent trades at each event
+    concurrent_trades = 0
+    max_concurrent = 0
+    
+    for event in events:
+        if event['type'] == 'open':
+            concurrent_trades += 1
+            max_concurrent = max(max_concurrent, concurrent_trades)
+        else:
+            concurrent_trades -= 1
+    
+    return max_concurrent

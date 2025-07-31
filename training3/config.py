@@ -48,6 +48,11 @@ TP_SL_LEVELS = [
 ]
 
 
+# --- Konfiguracja predykcji CSV ---
+# Indeks modelu używany do generowania pliku CSV z predykcjami testowymi
+# Dostępne indeksy: 0-4 (odpowiadają TP_SL_LEVELS)
+CSV_PREDICTIONS_MODEL_INDEX = 3  
+
 def get_model_filename():
     """Generuje nazwę pliku modelu z informacją o poziomach TP/SL."""
     # Generowanie skróconych opisów poziomów na podstawie TP_SL_LEVELS
@@ -228,7 +233,3 @@ SAVE_PLOTS = True
 PRIMARY_METRICS = ['precision', 'recall', 'f1-score']
 FOCUS_CLASSES = [0, 1, 2]  # LONG, SHORT, NEUTRAL
 
-# --- Konfiguracja predykcji CSV ---
-# Indeks modelu używany do generowania pliku CSV z predykcjami testowymi
-# Dostępne indeksy: 0-4 (odpowiadają TP_SL_LEVELS)
-CSV_PREDICTIONS_MODEL_INDEX = 0  # TP: 1.2%, SL: 0.4% (model_tp1p2_sl0p4.json) 

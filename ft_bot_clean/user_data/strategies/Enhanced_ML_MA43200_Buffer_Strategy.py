@@ -1,8 +1,8 @@
 """
-🚀 ARCHITEKTURA V6 - Enhanced XGBoost Strategy 🚀
+🚀 ARCHITEKTURA V7 - Enhanced XGBoost Strategy 🚀
 
 Zgodnie z ostatecznym, precyzyjnym planem, ta strategia implementuje
-XGBoost z 37 cechami i 5 poziomami TP/SL.
+XGBoost z 37 cechami i pojedynczym modelem.
 
 ✅ TRYB BACKTEST:
 - Przetwarzanie "świeca po świecy".
@@ -46,12 +46,26 @@ from user_data.strategies.utils.pair_manager import PairManager
 logger = logging.getLogger(__name__)
 
 class Enhanced_ML_MA43200_Buffer_Strategy(IStrategy):
-    strategy_name = "Enhanced_ML_MA43200_Buffer_Strategy_v6"
+    strategy_name = "Enhanced_ML_MA43200_Buffer_Strategy_v7"
     timeframe = '1m'
     startup_candle_count: int = 0
 
-    # ROI table i stoploss są teraz w config.json
-    stoploss = -0.004
+    # ROI table:
+    minimal_roi = {
+        "0": 0.008
+    }
+
+    # Stoploss:
+    stoploss = -0.003
+
+    # Trailing stop:
+    trailing_stop = False
+
+    # Wymuś opłaty na poziomie 0
+    def custom_fee(self, pair: str, side: str, amount: float, price: float, 
+                   taker_or_maker: str) -> float:
+        """Wymusza opłaty na poziomie 0 dla backtestingu"""
+        return 0.0
     
     can_short = True
     position_adjustment_enable = False
@@ -111,10 +125,9 @@ class Enhanced_ML_MA43200_Buffer_Strategy(IStrategy):
 
     def _load_backtest_config(self) -> None:
         """Ładuje konfigurację dla backtestingu."""
-        self.ml_confidence_short = self.ml_config.get('confidence_threshold_short', 0.42)
-        self.ml_confidence_long = self.ml_config.get('confidence_threshold_long', 0.42)
-        self.ml_confidence_hold = self.ml_config.get('confidence_threshold_hold', 0.30)
-        self.selected_model_index = self.ml_config.get('selected_model_index', 2)
+        self.ml_confidence_short = self.ml_config.get('confidence_threshold_short', 0.40)
+        self.ml_confidence_long = self.ml_config.get('confidence_threshold_long', 0.40)
+        self.ml_confidence_neutral = self.ml_config.get('confidence_threshold_neutral', 0.30)
 
 
     def bot_start(self, **kwargs) -> None:
@@ -123,22 +136,19 @@ class Enhanced_ML_MA43200_Buffer_Strategy(IStrategy):
             logger.warning("❌ ML Strategy jest wyłączona w konfiguracji.")
             return
             
-        logger.info("🚀 Enhanced ML Strategy v5.0 (Precise Architecture) initialized!")
+        logger.info("🚀 Enhanced ML Strategy v7.0 (Single Model Architecture) initialized!")
         
         # Logowanie konfiguracji ML
         logger.info(f"🔧 Konfiguracja ML:")
-        logger.info(f"   - Progi pewności: SHORT={self.ml_confidence_short}, LONG={self.ml_confidence_long}, HOLD={self.ml_confidence_hold}")
+        logger.info(f"   - Progi pewności: SHORT={self.ml_confidence_short}, LONG={self.ml_confidence_long}, NEUTRAL={self.ml_confidence_neutral}")
+        logger.info(f"   - Model: Pojedynczy model ładowany z metadata.json")
         
-        # Mapowanie indeksów na opisy poziomów TP/SL
-        tp_sl_levels = [
-            "TP: 1.2%, SL: 0.4%",
-            "TP: 0.6%, SL: 0.3%", 
-            "TP: 0.8%, SL: 0.4%",
-            "TP: 1.0%, SL: 0.5%",
-            "TP: 1.5%, SL: 0.4%"
-        ]
-        selected_level = tp_sl_levels[self.selected_model_index] if 0 <= self.selected_model_index < len(tp_sl_levels) else "NIEZNANY"
-        logger.info(f"   - Wybrany model: indeks {self.selected_model_index} ({selected_level})")
+        # Przekaż progi pewności do SignalGenerator
+        self.signal_generator.set_thresholds(
+            short_threshold=self.ml_confidence_short,
+            long_threshold=self.ml_confidence_long,
+            neutral_threshold=self.ml_confidence_neutral
+        )
         
         # Inicjalizacja systemu wieloparowego
         self._initialize_multi_pair_system()
@@ -344,8 +354,8 @@ class Enhanced_ML_MA43200_Buffer_Strategy(IStrategy):
         features_df = pd.DataFrame(features_list, columns=self.signal_generator.feature_columns)
         logger.info(f"🤖 {pair}: Przygotowywanie batch prediction dla {len(features_list)} próbek...")
         
-        # Generuj sygnały dla całego batcha
-        all_signal_dicts = self.signal_generator.generate_signals_for_batch(model, scaler, features_df, self.selected_model_index)
+        # Generuj sygnały dla wszystkich świec w batch
+        all_signal_dicts = self.signal_generator.generate_signals_for_batch(model, scaler, features_df)
         
         # Przypisz sygnały do odpowiednich wierszy
         logger.info(f"✍️ {pair}: Przypisywanie {len(all_signal_dicts)} sygnałów do ramki danych...")
@@ -358,11 +368,11 @@ class Enhanced_ML_MA43200_Buffer_Strategy(IStrategy):
                 
                 # Przypisz sygnały
                 signal = signal_data.get('signal')
-                if signal == 'LONG':
+                if signal == 'long':
                     dataframe.at[original_idx, 'enter_long'] = 1
-                elif signal == 'SHORT':
+                elif signal == 'short':
                     dataframe.at[original_idx, 'enter_short'] = 1
-                # NEUTRAL nie generuje sygnałów wejścia
+                # neutral nie generuje sygnałów wejścia
                 
                 # Zapisz dane do logu, jeśli istnieją
                 if signal_data and 'probabilities' in signal_data:
@@ -371,8 +381,8 @@ class Enhanced_ML_MA43200_Buffer_Strategy(IStrategy):
                         'pair': pair,
                         'signal': signal,
                         'confidence': signal_data.get('confidence'),
-                        'prob_SHORT': signal_data['probabilities'][0],
-                        'prob_LONG': signal_data['probabilities'][1],
+                        'prob_SHORT': signal_data['probabilities'][1],
+                        'prob_LONG': signal_data['probabilities'][0],
                         'prob_NEUTRAL': signal_data['probabilities'][2]
                     })
 
@@ -406,7 +416,7 @@ class Enhanced_ML_MA43200_Buffer_Strategy(IStrategy):
                     # Utwórz dataframe z cechami dla ostatniego wiersza
                     features_df = pd.DataFrame([features], columns=self.signal_generator.feature_columns)
                     
-                    signal_data = self.signal_generator.generate_signal(model, scaler, features_df, self.selected_model_index)
+                    signal_data = self.signal_generator.generate_signal(model, scaler, features_df)
                     self._assign_signals_to_row(
                         dataframe,
                         dataframe.index[-1],
