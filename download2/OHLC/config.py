@@ -4,26 +4,27 @@
 
 # Lista par kryptowalut do pobierania (futures)
 PAIRS = [
-    "ETHUSDT",
-    "BCHUSDT",
-    "XRPUSDT",
-    "LTCUSDT",
-    "TRXUSDT",
-    "ETCUSDT",
-    "LINKUSDT",
-    "XLMUSDT",
-    "ADAUSDT",
-    "XMRUSDT",
-    "DASHUSDT",
-    "ZECUSDT",
-    "XTZUSDT",
-    "ATOMUSDT",
-    "BNBUSDT",
-    "ONTUSDT",
-    "IOTAUSDT",
-    "BATUSDT",
-    "VETUSDT",
-    "NEOUSDT"
+     "BTCUSDT",
+#    "ETHUSDT",
+#    "BCHUSDT",
+#    "XRPUSDT",
+#    "LTCUSDT",
+#    "TRXUSDT",
+#    "ETCUSDT",
+#    "LINKUSDT",
+#    "XLMUSDT",
+#    "ADAUSDT",
+#    "XMRUSDT",
+#    "DASHUSDT",
+#    "ZECUSDT",
+#    "XTZUSDT",
+#    "ATOMUSDT",
+#    "BNBUSDT",
+#    "ONTUSDT",
+#    "IOTAUSDT",
+#    "BATUSDT",  
+#    "VETUSDT",
+#    "NEOUSDT"
 ]
 
 # Konfiguracja pobierania

@@ -102,79 +102,92 @@ TP_SL_LEVELS_DESC = [
     for level in TP_SL_LEVELS
 ]
 
-# --- Lista Cech do Treningu ---
-# Wszystkie cechy z feature_calculator_download2 (113 kolumn - 15 etykiet = 98 cech)
-# Automatycznie wykrywane z danych, ale tutaj lista oczekiwanych cech
-FEATURES = [
-    # OHLC cechy (5)
-    'open', 'high', 'low', 'close', 'volume',
+# --- Konfiguracja Cech do Treningu ---
+# Opcja wyboru między pełnymi 71 cechami a podstawowymi 37 cechami z training3
+USE_BASIC_FEATURES_ONLY = True   # True = tylko 37 cech z training3 (jak w training3), False = wszystkie 71 cech
+
+# Podstawowe cechy z training3 (37 cech)
+BASIC_FEATURES = [
+    # 1. CECHY TRENDU CENY (5 cech) - WZGLĘDNE
+    'price_trend_30m', 'price_trend_2h', 'price_trend_6h',
+    'price_strength', 'price_consistency_score',
     
-    # Bamboo TA cechy (około 50+)
-    'bb_width', 'bb_position', 'rsi_14', 'macd_hist', 'macd_signal', 'macd',
-    'stoch_k', 'stoch_d', 'adx', 'cci', 'williams_r', 'mfi', 'obv',
-    'ema_12', 'ema_26', 'sma_20', 'sma_50', 'sma_200',
-    'atr', 'natr', 'trange', 'hlc3', 'typical_price',
-    'vwap', 'vwap_upper', 'vwap_lower',
-    'supertrend', 'supertrend_direction', 'supertrend_signal',
-    'ichimoku_a', 'ichimoku_b', 'ichimoku_base', 'ichimoku_conversion',
-    'kst', 'kst_sig', 'kst_diff',
-    'tsi', 'tsi_signal', 'tsi_diff',
-    'uo', 'uo_bull', 'uo_bear',
-    'ao', 'ao_signal',
-    'mom', 'mom_signal',
-    'roc', 'roc_signal',
-    'stoch_rsi_k', 'stoch_rsi_d',
-    'wma', 'hma', 'dema', 'tema',
-    'kama', 't3', 'trix', 'trix_signal',
-    'aroon_up', 'aroon_down', 'aroon_ind',
-    'psar', 'psar_up', 'psar_down',
-    'bbands_upper', 'bbands_middle', 'bbands_lower',
-    'kc_upper', 'kc_middle', 'kc_lower',
-    'dc_upper', 'dc_middle', 'dc_lower',
+    # 2. CECHY POZYCJI CENY (4 cechy) - WZGLĘDNE
+    'price_vs_ma_60', 'price_vs_ma_240', 'ma_trend', 'price_volatility_rolling',
     
-    # Orderbook cechy (około 40+)
-    'buy_sell_ratio_s1', 'buy_sell_ratio_s2', 'buy_sell_ratio_s3',
-    'buy_sell_ratio_s4', 'buy_sell_ratio_s5',
-    'depth_imbalance_s1', 'depth_imbalance_s2', 'depth_imbalance_s3',
-    'depth_imbalance_s4', 'depth_imbalance_s5',
-    'spread', 'spread_pct', 'mid_price',
-    'bid_volume_s1', 'bid_volume_s2', 'bid_volume_s3', 'bid_volume_s4', 'bid_volume_s5',
-    'ask_volume_s1', 'ask_volume_s2', 'ask_volume_s3', 'ask_volume_s4', 'ask_volume_s5',
-    'bid_price_s1', 'bid_price_s2', 'bid_price_s3', 'bid_price_s4', 'bid_price_s5',
-    'ask_price_s1', 'ask_price_s2', 'ask_price_s3', 'ask_price_s4', 'ask_price_s5',
-    'total_bid_volume', 'total_ask_volume', 'total_volume',
-    'volume_imbalance', 'price_imbalance',
-    'order_flow_imbalance', 'order_flow_trend',
-    'market_microstructure_score', 'liquidity_score',
+    # 3. CECHY VOLUME (5 cech) - WZGLĘDNE
+    'volume_trend_1h', 'volume_intensity', 'volume_volatility_rolling',
+    'volume_price_correlation', 'volume_momentum',
     
-    # Hybrid cechy (około 10+)
-    'price_volume_trend', 'volume_price_trend',
-    'orderbook_price_correlation', 'orderbook_volume_correlation',
-    'market_efficiency_ratio', 'price_efficiency_ratio',
-    'volume_efficiency_ratio', 'orderbook_efficiency_ratio',
+    # 4. CECHY ORDERBOOK (4 cechy) - WZGLĘDNE
+    'spread_tightness', 'depth_ratio_s1', 'depth_ratio_s2', 'depth_momentum',
     
-    # Relative cechy (około 15+)
-    'price_change_1m', 'price_change_5m', 'price_change_15m', 'price_change_30m',
-    'volume_change_1m', 'volume_change_5m', 'volume_change_15m', 'volume_change_30m',
-    'spread_change_1m', 'spread_change_5m', 'spread_change_15m', 'spread_change_30m',
-    'depth_change_1m', 'depth_change_5m', 'depth_change_15m', 'depth_change_30m',
+    # 5. MARKET REGIME (5 cech) - ZAAWANSOWANE
+    'market_trend_strength', 'market_trend_direction', 'market_choppiness',
+    'bollinger_band_width', 'market_regime',
     
-    # Advanced cechy (około 20+)
-    'volatility_1m', 'volatility_5m', 'volatility_15m', 'volatility_30m',
+    # 6. VOLATILITY CLUSTERING (6 cech) - ZAAWANSOWANE
     'volatility_regime', 'volatility_percentile', 'volatility_persistence',
     'volatility_momentum', 'volatility_of_volatility', 'volatility_term_structure',
-    'market_regime', 'market_trend_strength', 'market_trend_direction',
-    'market_choppiness', 'market_momentum', 'market_efficiency',
-    'orderbook_regime', 'orderbook_trend_strength', 'orderbook_trend_direction',
-    'orderbook_choppiness', 'orderbook_momentum', 'orderbook_efficiency',
-    'volume_regime', 'volume_trend_strength', 'volume_trend_direction',
-    'volume_choppiness', 'volume_momentum', 'volume_efficiency'
+    
+    # 7. ORDER BOOK IMBALANCE (8 cech) - ZAAWANSOWANE
+    'volume_imbalance', 'weighted_volume_imbalance', 'volume_imbalance_trend',
+    'price_pressure', 'weighted_price_pressure', 'price_pressure_momentum',
+    'order_flow_imbalance', 'order_flow_trend'
 ]
 
+# Wszystkie cechy z feature_calculator_download2 (71 cech)
+EXTENDED_FEATURES = [
+    # Cechy trendu ceny (5 cech) - PODSTAWOWE
+    'price_trend_30m', 'price_trend_2h', 'price_trend_6h', 'price_strength', 'price_consistency_score',
+    
+    # Cechy pozycji ceny (4 cechy) - PODSTAWOWE
+    'price_vs_ma_60', 'price_vs_ma_240', 'ma_trend', 'price_volatility_rolling',
+    
+    # Cechy wolumenu (5 cech) - PODSTAWOWE
+    'volume_trend_1h', 'volume_intensity', 'volume_volatility_rolling', 'volume_price_correlation', 'volume_momentum',
+    
+    # Cechy orderbook (4 cechy) - PODSTAWOWE
+    'spread_tightness', 'depth_ratio_s1', 'depth_ratio_s2', 'depth_momentum',
+    
+    # Market regime (5 cech) - PODSTAWOWE
+    'market_trend_strength', 'market_trend_direction', 'market_choppiness',
+    'bollinger_band_width', 'market_regime',
+    
+    # Volatility clustering (6 cech) - PODSTAWOWE
+    'volatility_regime', 'volatility_percentile', 'volatility_persistence',
+    'volatility_momentum', 'volatility_of_volatility', 'volatility_term_structure',
+    
+    # Order book imbalance (8 cech) - PODSTAWOWE
+    'volume_imbalance', 'weighted_volume_imbalance', 'volume_imbalance_trend',
+    'price_pressure', 'weighted_price_pressure', 'price_pressure_momentum',
+    'order_flow_imbalance', 'order_flow_trend',
+    
+    # Dodatkowe cechy OHLC (12) - DODATKOWE
+    'bb_width', 'bb_position', 'rsi_14', 'macd_hist', 'adx_14',
+    'price_to_ma_60', 'price_to_ma_240', 'ma_60_to_ma_240', 'price_to_ma_1440',
+    'volume_change_norm', 'upper_wick_ratio_5m', 'lower_wick_ratio_5m',
+    
+    # Dodatkowe cechy bamboo_ta (6) - DODATKOWE
+    'stoch_k', 'stoch_d', 'cci', 'williams_r', 'mfi', 'trange',
+    
+    # Dodatkowe cechy orderbook (6) - DODATKOWE
+    'buy_sell_ratio_s1', 'buy_sell_ratio_s2', 'imbalance_s1', 'imbalance_s2',
+    'spread_pct', 'price_imbalance',
+    
+    # Cechy hybrydowe (10) - DODATKOWE
+    'market_microstructure_score', 'liquidity_score', 'depth_price_corr',
+    'pressure_volume_corr', 'hour_of_day', 'day_of_week', 'price_momentum',
+    'market_efficiency_ratio', 'price_efficiency_ratio', 'volume_efficiency_ratio'
+]
+
+# Automatyczny wybór cech na podstawie ustawienia
+FEATURES = BASIC_FEATURES if USE_BASIC_FEATURES_ONLY else EXTENDED_FEATURES
+
 # Opcjonalne filtrowanie po dacie
-ENABLE_DATE_FILTER = False
-START_DATE = "2022-01-01"
-END_DATE = "2023-01-01"
+ENABLE_DATE_FILTER = True
+START_DATE = "2023-01-31 00:00:00"  # Dokładnie jak w training3
+END_DATE = "2025-06-30 23:59:59"    # Dokładnie jak w training3 (koniec testu)
 
 # --- Parametry Podziału Danych ---
 VALIDATION_SPLIT = 0.15
@@ -182,14 +195,20 @@ TEST_SPLIT = 0.15
 
 # --- Parametry Modelu XGBoost Multi-Output ---
 XGB_N_ESTIMATORS = 400          # Maksymalna liczba drzew
-XGB_LEARNING_RATE = 0.05        # Współczynnik uczenia
-XGB_MAX_DEPTH = 6               # Maksymalna głębokość drzewa
-XGB_SUBSAMPLE = 0.8             # Procent próbek użytych do budowy każdego drzewa
-XGB_COLSAMPLE_BYTREE = 0.7      # Procent cech użytych do budowy każdego drzewa
-XGB_GAMMA = 0.1                 # Minimalna redukcja straty wymagana do podziału
+XGB_LEARNING_RATE = 0.05        # Współczynnik uczenia (jak w training3)
+XGB_MAX_DEPTH = 6               # Maksymalna głębokość drzewa (jak w training3)
+XGB_SUBSAMPLE = 0.8             # Procent próbek użytych do budowy każdego drzewa (jak w training3)
+XGB_COLSAMPLE_BYTREE = 0.7      # Procent cech użytych do budowy każdego drzewa (jak w training3)
+XGB_GAMMA = 0.1                 # Minimalna redukcja straty wymagana do podziału (jak w training3)
 XGB_RANDOM_STATE = 42           # Ziarno losowości dla powtarzalności wyników
 XGB_N_JOBS = -1                 # Liczba procesów (-1 = wszystkie dostępne)
 XGB_EARLY_STOPPING_ROUNDS = 20  # Zatrzymaj trening, jeśli metryka na zbiorze walidacyjnym nie poprawi się przez 20 rund
+
+# --- Parametry Regularyzacji (przeciwko overfitting) ---
+# WYŁĄCZONE - jak w training3 (brak regularyzacji L1/L2)
+XGB_REG_ALPHA = 0.0             # L1 regularization (Lasso) - wyłączone
+XGB_REG_LAMBDA = 0.0            # L2 regularization (Ridge) - wyłączone
+XGB_MIN_CHILD_WEIGHT = 1        # Minimalna suma wag w liściu - zmniejszone (jak w training3)
 
 # --- Balansowanie Klas ---
 ENABLE_CLASS_BALANCING = False   # Wyłączone - bez balansowania
@@ -252,71 +271,72 @@ def detect_available_features(df_columns):
 def get_feature_groups():
     """
     Zwraca grupy cech dla lepszej organizacji i raportowania.
+    Dostosowane do wybranej konfiguracji cech.
     """
-    return {
-        'ohlc_features': ['open', 'high', 'low', 'close', 'volume'],
-        'bamboo_ta_features': [
-            'bb_width', 'bb_position', 'rsi_14', 'macd_hist', 'macd_signal', 'macd',
-            'stoch_k', 'stoch_d', 'adx', 'cci', 'williams_r', 'mfi', 'obv',
-            'ema_12', 'ema_26', 'sma_20', 'sma_50', 'sma_200',
-            'atr', 'natr', 'trange', 'hlc3', 'typical_price',
-            'vwap', 'vwap_upper', 'vwap_lower',
-            'supertrend', 'supertrend_direction', 'supertrend_signal',
-            'ichimoku_a', 'ichimoku_b', 'ichimoku_base', 'ichimoku_conversion',
-            'kst', 'kst_sig', 'kst_diff',
-            'tsi', 'tsi_signal', 'tsi_diff',
-            'uo', 'uo_bull', 'uo_bear',
-            'ao', 'ao_signal',
-            'mom', 'mom_signal',
-            'roc', 'roc_signal',
-            'stoch_rsi_k', 'stoch_rsi_d',
-            'wma', 'hma', 'dema', 'tema',
-            'kama', 't3', 'trix', 'trix_signal',
-            'aroon_up', 'aroon_down', 'aroon_ind',
-            'psar', 'psar_up', 'psar_down',
-            'bbands_upper', 'bbands_middle', 'bbands_lower',
-            'kc_upper', 'kc_middle', 'kc_lower',
-            'dc_upper', 'dc_middle', 'dc_lower'
-        ],
-        'orderbook_features': [
-            'buy_sell_ratio_s1', 'buy_sell_ratio_s2', 'buy_sell_ratio_s3',
-            'buy_sell_ratio_s4', 'buy_sell_ratio_s5',
-            'depth_imbalance_s1', 'depth_imbalance_s2', 'depth_imbalance_s3',
-            'depth_imbalance_s4', 'depth_imbalance_s5',
-            'spread', 'spread_pct', 'mid_price',
-            'bid_volume_s1', 'bid_volume_s2', 'bid_volume_s3', 'bid_volume_s4', 'bid_volume_s5',
-            'ask_volume_s1', 'ask_volume_s2', 'ask_volume_s3', 'ask_volume_s4', 'ask_volume_s5',
-            'bid_price_s1', 'bid_price_s2', 'bid_price_s3', 'bid_price_s4', 'bid_price_s5',
-            'ask_price_s1', 'ask_price_s2', 'ask_price_s3', 'ask_price_s4', 'ask_price_s5',
-            'total_bid_volume', 'total_ask_volume', 'total_volume',
-            'volume_imbalance', 'price_imbalance',
-            'order_flow_imbalance', 'order_flow_trend',
-            'market_microstructure_score', 'liquidity_score'
-        ],
-        'hybrid_features': [
-            'price_volume_trend', 'volume_price_trend',
-            'orderbook_price_correlation', 'orderbook_volume_correlation',
-            'market_efficiency_ratio', 'price_efficiency_ratio',
-            'volume_efficiency_ratio', 'orderbook_efficiency_ratio'
-        ],
-        'relative_features': [
-            'price_change_1m', 'price_change_5m', 'price_change_15m', 'price_change_30m',
-            'volume_change_1m', 'volume_change_5m', 'volume_change_15m', 'volume_change_30m',
-            'spread_change_1m', 'spread_change_5m', 'spread_change_15m', 'spread_change_30m',
-            'depth_change_1m', 'depth_change_5m', 'depth_change_15m', 'depth_change_30m'
-        ],
-        'advanced_features': [
-            'volatility_1m', 'volatility_5m', 'volatility_15m', 'volatility_30m',
-            'volatility_regime', 'volatility_percentile', 'volatility_persistence',
-            'volatility_momentum', 'volatility_of_volatility', 'volatility_term_structure',
-            'market_regime', 'market_trend_strength', 'market_trend_direction',
-            'market_choppiness', 'market_momentum', 'market_efficiency',
-            'orderbook_regime', 'orderbook_trend_strength', 'orderbook_trend_direction',
-            'orderbook_choppiness', 'orderbook_momentum', 'orderbook_efficiency',
-            'volume_regime', 'volume_trend_strength', 'volume_trend_direction',
-            'volume_choppiness', 'volume_momentum', 'volume_efficiency'
-        ]
-    }
+    if USE_BASIC_FEATURES_ONLY:
+        # Tryb podstawowy (37 cech z training3)
+        return {
+            'relative_features': [
+                'price_trend_30m', 'price_trend_2h', 'price_trend_6h',
+                'price_strength', 'price_consistency_score',
+                'price_vs_ma_60', 'price_vs_ma_240', 'ma_trend', 'price_volatility_rolling',
+                'volume_trend_1h', 'volume_intensity', 'volume_volatility_rolling',
+                'volume_price_correlation', 'volume_momentum',
+                'spread_tightness', 'depth_ratio_s1', 'depth_ratio_s2', 'depth_momentum'
+            ],
+            'market_regime_features': [
+                'market_trend_strength', 'market_trend_direction', 'market_choppiness',
+                'bollinger_band_width', 'market_regime'
+            ],
+            'volatility_features': [
+                'volatility_regime', 'volatility_percentile', 'volatility_persistence',
+                'volatility_momentum', 'volatility_of_volatility', 'volatility_term_structure'
+            ],
+            'imbalance_features': [
+                'volume_imbalance', 'weighted_volume_imbalance', 'volume_imbalance_trend',
+                'price_pressure', 'weighted_price_pressure', 'price_pressure_momentum',
+                'order_flow_imbalance', 'order_flow_trend'
+            ]
+        }
+    else:
+        # Tryb rozszerzony (71 cech)
+        return {
+            'basic_features': [
+                # Cechy trendu ceny (5 cech)
+                'price_trend_30m', 'price_trend_2h', 'price_trend_6h', 'price_strength', 'price_consistency_score',
+                # Cechy pozycji ceny (4 cechy)
+                'price_vs_ma_60', 'price_vs_ma_240', 'ma_trend', 'price_volatility_rolling',
+                # Cechy wolumenu (5 cech)
+                'volume_trend_1h', 'volume_intensity', 'volume_volatility_rolling', 'volume_price_correlation', 'volume_momentum',
+                # Cechy orderbook (4 cechy)
+                'spread_tightness', 'depth_ratio_s1', 'depth_ratio_s2', 'depth_momentum',
+                # Market regime (5 cech)
+                'market_trend_strength', 'market_trend_direction', 'market_choppiness',
+                'bollinger_band_width', 'market_regime',
+                # Volatility clustering (6 cech)
+                'volatility_regime', 'volatility_percentile', 'volatility_persistence',
+                'volatility_momentum', 'volatility_of_volatility', 'volatility_term_structure',
+                # Order book imbalance (8 cech)
+                'volume_imbalance', 'weighted_volume_imbalance', 'volume_imbalance_trend',
+                'price_pressure', 'weighted_price_pressure', 'price_pressure_momentum',
+                'order_flow_imbalance', 'order_flow_trend'
+            ],
+            'additional_features': [
+                # Dodatkowe cechy OHLC (12)
+                'bb_width', 'bb_position', 'rsi_14', 'macd_hist', 'adx_14',
+                'price_to_ma_60', 'price_to_ma_240', 'ma_60_to_ma_240', 'price_to_ma_1440',
+                'volume_change_norm', 'upper_wick_ratio_5m', 'lower_wick_ratio_5m',
+                # Dodatkowe cechy bamboo_ta (6)
+                'stoch_k', 'stoch_d', 'cci', 'williams_r', 'mfi', 'trange',
+                # Dodatkowe cechy orderbook (6)
+                'buy_sell_ratio_s1', 'buy_sell_ratio_s2', 'imbalance_s1', 'imbalance_s2',
+                'spread_pct', 'price_imbalance',
+                # Cechy hybrydowe (10)
+                'market_microstructure_score', 'liquidity_score', 'depth_price_corr',
+                'pressure_volume_corr', 'hour_of_day', 'day_of_week', 'price_momentum',
+                'market_efficiency_ratio', 'price_efficiency_ratio', 'volume_efficiency_ratio'
+            ]
+        }
 
 # --- Weighted Loss Configuration ---
 ENABLE_WEIGHTED_LOSS = False     # WYŁĄCZONE - bez wag
@@ -346,9 +366,9 @@ FOCUS_CLASSES = [0, 1, 2]  # LONG, SHORT, NEUTRAL
 # --- Informacje o module ---
 MODULE_INFO = {
     'name': 'training4',
-    'version': '1.0.0',
-    'description': 'Moduł treningowy Multi-Output XGBoost dla nowego pipeline\'u (feature_calculator_download2 + labeler4)',
+    'version': '1.1.0',
+    'description': 'Moduł treningowy Multi-Output XGBoost dla nowego pipeline\'u (feature_calculator_download2 + labeler4) - ZOPTYMALIZOWANY Z PARAMETRAMI TRAINING3',
     'author': 'AI Assistant',
-    'features': 'Multi-pair training, individual scalers, batch processing'
+    'features': 'Multi-pair training, individual scalers, batch processing, training3 parameters'
 }
 

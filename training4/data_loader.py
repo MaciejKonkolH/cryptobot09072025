@@ -162,6 +162,36 @@ class DataLoader:
         """Skaluje cechy używając RobustScaler."""
         logger.info("Skalowanie cech...")
         
+        # Czyszczenie danych - zastąp inf/-inf wartościami NaN
+        logger.info("Czyszczenie danych - usuwanie inf/-inf...")
+        
+        # Sprawdź i wyczyść dane treningowe
+        inf_count_train = np.isinf(self.X_train).sum().sum()
+        if inf_count_train > 0:
+            logger.info(f"Znaleziono {inf_count_train} wartości inf/-inf w danych treningowych")
+            self.X_train = self.X_train.replace([np.inf, -np.inf], np.nan)
+        
+        # Sprawdź i wyczyść dane walidacyjne
+        inf_count_val = np.isinf(self.X_val).sum().sum()
+        if inf_count_val > 0:
+            logger.info(f"Znaleziono {inf_count_val} wartości inf/-inf w danych walidacyjnych")
+            self.X_val = self.X_val.replace([np.inf, -np.inf], np.nan)
+        
+        # Sprawdź i wyczyść dane testowe
+        inf_count_test = np.isinf(self.X_test).sum().sum()
+        if inf_count_test > 0:
+            logger.info(f"Znaleziono {inf_count_test} wartości inf/-inf w danych testowych")
+            self.X_test = self.X_test.replace([np.inf, -np.inf], np.nan)
+        
+        # Wypełnij NaN medianą z danych treningowych
+        if inf_count_train > 0 or inf_count_val > 0 or inf_count_test > 0:
+            logger.info("Wypełnianie NaN medianą z danych treningowych...")
+            train_median = self.X_train.median()
+            
+            self.X_train = self.X_train.fillna(train_median)
+            self.X_val = self.X_val.fillna(train_median)
+            self.X_test = self.X_test.fillna(train_median)
+        
         self.scaler = RobustScaler()
         
         # Dopasuj skaler na danych treningowych

@@ -97,52 +97,170 @@ class FastOrderbookDownloader:
             return False
     
     def get_available_date_range(self, symbol: str) -> Tuple[datetime, datetime]:
-        """Sprawdza dostępny zakres dat dla pary orderbook"""
-        self.logger.info(f"Sprawdzam dostępny zakres dat orderbook dla {symbol}")
+        """Sprawdza dostępny zakres dat dla pary orderbook używając ulepszonego algorytmu"""
+        self.logger.info(f"Sprawdzam dostępny zakres dat orderbook dla {symbol} (ulepszony algorytm)")
         
-        # Testuj różne daty wstecz - sprawdź wszystkie aby znaleźć najstarszą dostępną
-        test_dates = [
-            datetime.now() - timedelta(days=30),   # 1 miesiąc
-            datetime.now() - timedelta(days=90),   # 3 miesiące
-            datetime.now() - timedelta(days=180),  # 6 miesięcy
-            datetime.now() - timedelta(days=365),  # 1 rok
-            datetime.now() - timedelta(days=730),  # 2 lata
-            datetime.now() - timedelta(days=1095), # 3 lata
-            datetime.now() - timedelta(days=1460), # 4 lata
-            datetime.now() - timedelta(days=1825), # 5 lat
-        ]
+        # Sprawdź cache
+        cache_file = Path(FILE_CONFIG['output_dir']) / "available_ranges.json"
+        if cache_file.exists():
+            try:
+                with open(cache_file, 'r') as f:
+                    cache_data = json.load(f)
+                if symbol in cache_data:
+                    cached_range = cache_data[symbol]
+                    oldest = datetime.fromisoformat(cached_range['oldest'])
+                    latest = datetime.fromisoformat(cached_range['latest'])
+                    self.logger.info(f"Użyto cache dla {symbol}: {oldest.strftime('%Y-%m-%d')} - {latest.strftime('%Y-%m-%d')}")
+                    return oldest, latest
+            except Exception as e:
+                self.logger.warning(f"Błąd wczytywania cache: {e}")
         
-        oldest_date = None
-        latest_date = datetime.now()
-        
-        # Sprawdź wszystkie daty aby znaleźć najstarszą dostępną
-        for test_date in test_dates:
-            date_str = test_date.strftime('%Y-%m-%d')
-            url = f"{self.base_url}/{DOWNLOAD_CONFIG['market']}/um/daily/bookDepth/{symbol}/{symbol}-bookDepth-{date_str}.zip"
-            
-            if self.check_file_exists_on_server(url):
-                oldest_date = test_date
-                self.logger.info(f"Znaleziono dane orderbook dla {symbol} od {date_str}")
-                # NIE PRZERYWAJ - sprawdź wszystkie daty aby znaleźć najstarszą
-        
+        # Znajdź najstarszą dostępną datę
+        oldest_date = self._find_oldest_available_date(symbol)
         if oldest_date is None:
-            # Jeśli nie znaleziono starszych danych, spróbuj ostatnie 7 dni
-            for i in range(7):
-                test_date = datetime.now() - timedelta(days=i)
-                date_str = test_date.strftime('%Y-%m-%d')
-                url = f"{self.base_url}/{DOWNLOAD_CONFIG['market']}/um/daily/bookDepth/{symbol}/{symbol}-bookDepth-{date_str}.zip"
-                
-                if self.check_file_exists_on_server(url):
-                    oldest_date = test_date
-                    latest_date = test_date
-                    self.logger.info(f"Znaleziono dane orderbook dla {symbol} od {date_str}")
-                    break
+            raise Exception(f"Nie udało się określić najstarszej dostępnej daty dla {symbol}")
         
-        if oldest_date is None:
-            raise Exception(f"Nie znaleziono żadnych danych orderbook dla {symbol}")
+        # Znajdź najnowszą dostępną datę
+        latest_date = self._find_latest_available_date(symbol)
+        if latest_date is None:
+            raise Exception(f"Nie udało się określić najnowszej dostępnej daty dla {symbol}")
+        
+        # Zapisz do cache
+        self._save_date_range_to_cache(symbol, oldest_date, latest_date)
         
         self.logger.info(f"{symbol} orderbook: {oldest_date.strftime('%Y-%m-%d')} - {latest_date.strftime('%Y-%m-%d')}")
         return oldest_date, latest_date
+    
+    def _find_oldest_available_date(self, symbol: str) -> Optional[datetime]:
+        """Znajduje najstarszą dostępną datę używając ulepszonego algorytmu"""
+        self.logger.info(f"Szukam najstarszej dostępnej daty dla {symbol}...")
+        
+        # KROK 1: Sprawdź ostatni dzień każdego roku od 2019
+        for year in range(2019, datetime.now().year + 1):
+            test_date = datetime(year, 12, 31)
+            date_str = test_date.strftime('%Y-%m-%d')
+            
+            self.logger.info(f"  Sprawdzam {date_str} (ostatni dzień {year})...")
+            
+            url = f"{self.base_url}/{DOWNLOAD_CONFIG['market']}/um/daily/bookDepth/{symbol}/{symbol}-bookDepth-{date_str}.zip"
+            if self.check_file_exists_on_server(url):
+                self.logger.info(f"  ✅ Znaleziono dane w {year}")
+                
+                # KROK 2: W znalezionym roku sprawdź ostatni dzień każdego miesiąca
+                oldest_month = self._find_oldest_month_with_data(symbol, year)
+                if oldest_month is None:
+                    continue
+                
+                # KROK 3: W pierwszym miesiącu z danymi sprawdź dzień po dniu
+                oldest_day = self._find_oldest_day_in_month(symbol, year, oldest_month)
+                if oldest_day is None:
+                    continue
+                
+                self.logger.info(f"  ✅ Najstarsza dostępna data: {oldest_day.strftime('%Y-%m-%d')}")
+                return oldest_day
+            
+            time.sleep(DOWNLOAD_CONFIG['chunk_delay'])
+        
+        return None
+    
+    def _find_oldest_month_with_data(self, symbol: str, year: int) -> Optional[int]:
+        """Znajduje najstarszy miesiąc z danymi w danym roku"""
+        self.logger.info(f"  Szukam najstarszego miesiąca z danymi w {year}...")
+        
+        for month in range(1, 13):
+            # Znajdź ostatni dzień miesiąca
+            if month == 12:
+                last_day = 31
+            else:
+                next_month = datetime(year, month + 1, 1)
+                last_day = (next_month - timedelta(days=1)).day
+            
+            test_date = datetime(year, month, last_day)
+            date_str = test_date.strftime('%Y-%m-%d')
+            
+            self.logger.info(f"    Sprawdzam {date_str} (ostatni dzień {month})...")
+            
+            url = f"{self.base_url}/{DOWNLOAD_CONFIG['market']}/um/daily/bookDepth/{symbol}/{symbol}-bookDepth-{date_str}.zip"
+            if self.check_file_exists_on_server(url):
+                self.logger.info(f"    ✅ Znaleziono dane w miesiącu {month}")
+                return month
+            
+            time.sleep(DOWNLOAD_CONFIG['chunk_delay'])
+        
+        return None
+    
+    def _find_oldest_day_in_month(self, symbol: str, year: int, month: int) -> Optional[datetime]:
+        """Znajduje najstarszy dzień z danymi w danym miesiącu"""
+        self.logger.info(f"    Szukam najstarszego dnia z danymi w {year}-{month:02d}...")
+        
+        # Znajdź liczbę dni w miesiącu
+        if month == 12:
+            days_in_month = 31
+        else:
+            next_month = datetime(year, month + 1, 1)
+            days_in_month = (next_month - timedelta(days=1)).day
+        
+        for day in range(1, days_in_month + 1):
+            test_date = datetime(year, month, day)
+            date_str = test_date.strftime('%Y-%m-%d')
+            
+            self.logger.info(f"      Sprawdzam {date_str}...")
+            
+            url = f"{self.base_url}/{DOWNLOAD_CONFIG['market']}/um/daily/bookDepth/{symbol}/{symbol}-bookDepth-{date_str}.zip"
+            if self.check_file_exists_on_server(url):
+                self.logger.info(f"      ✅ Znaleziono pierwszy dzień z danymi: {date_str}")
+                return test_date
+            
+            time.sleep(DOWNLOAD_CONFIG['chunk_delay'])
+        
+        return None
+    
+    def _find_latest_available_date(self, symbol: str) -> Optional[datetime]:
+        """Znajduje najnowszą dostępną datę"""
+        self.logger.info(f"Szukam najnowszej dostępnej daty dla {symbol}...")
+        
+        # Sprawdź ostatnie 30 dni
+        for i in range(30):
+            test_date = datetime.now() - timedelta(days=i)
+            date_str = test_date.strftime('%Y-%m-%d')
+            
+            self.logger.info(f"  Sprawdzam {date_str}...")
+            
+            url = f"{self.base_url}/{DOWNLOAD_CONFIG['market']}/um/daily/bookDepth/{symbol}/{symbol}-bookDepth-{date_str}.zip"
+            if self.check_file_exists_on_server(url):
+                self.logger.info(f"  ✅ Znaleziono najnowszą datę: {date_str}")
+                return test_date
+            
+            time.sleep(DOWNLOAD_CONFIG['chunk_delay'])
+        
+        return None
+    
+    def _save_date_range_to_cache(self, symbol: str, oldest: datetime, latest: datetime):
+        """Zapisuje zakres dat do cache"""
+        cache_file = Path(FILE_CONFIG['output_dir']) / "available_ranges.json"
+        
+        try:
+            # Wczytaj istniejący cache
+            cache_data = {}
+            if cache_file.exists():
+                with open(cache_file, 'r') as f:
+                    cache_data = json.load(f)
+            
+            # Dodaj nowy zakres
+            cache_data[symbol] = {
+                'oldest': oldest.isoformat(),
+                'latest': latest.isoformat(),
+                'cached_at': datetime.now().isoformat()
+            }
+            
+            # Zapisz cache
+            with open(cache_file, 'w') as f:
+                json.dump(cache_data, f, indent=2)
+            
+            self.logger.info(f"Zapisano zakres dat dla {symbol} do cache")
+            
+        except Exception as e:
+            self.logger.warning(f"Błąd zapisywania cache: {e}")
     
     def load_progress(self) -> Dict:
         """Ładuje postęp pobierania z pliku"""
@@ -204,11 +322,11 @@ class FastOrderbookDownloader:
         zip_path = os.path.join(FILE_CONFIG['output_dir'], f"{symbol}-bookDepth-{date_str}.zip")
         csv_path = os.path.join(FILE_CONFIG['output_dir'], f"{symbol}-bookDepth-{date_str}.csv")
         
-        # Sprawdź czy CSV już istnieje i jest kompletny
+        # Sprawdź czy CSV już istnieje lokalnie i jest kompletny
         if os.path.exists(csv_path):
             file_size = os.path.getsize(csv_path)
             if file_size > 1000:  # Sprawdź czy plik ma sensowny rozmiar
-                self.logger.debug(f"[OK] {date_str}: Orderbook CSV już istnieje ({file_size:,} bajtów)")
+                self.logger.debug(f"[OK] {date_str}: Orderbook CSV już istnieje lokalnie ({file_size:,} bajtów)")
                 return True
             else:
                 self.logger.warning(f"[WARN] {date_str}: Orderbook CSV istnieje ale jest za mały ({file_size} bajtów) - usuwam")
@@ -279,13 +397,28 @@ class FastOrderbookDownloader:
             if existing_range:
                 existing_start, existing_end = existing_range
                 
+                # Sprawdź czy brakuje starszych danych
+                if existing_start > available_start:
+                    self.logger.info(f"Pobieram starsze dane orderbook od {available_start.strftime('%Y-%m-%d')} do {existing_start.strftime('%Y-%m-%d')}")
+                    successful_older, failed_older = self.download_date_range(symbol, available_start, existing_start - timedelta(days=1))
+                else:
+                    successful_older, failed_older = [], []
+                
                 # Sprawdź czy potrzebujemy pobrać nowsze dane
                 if existing_end < available_end:
                     self.logger.info(f"Pobieram nowsze dane orderbook od {existing_end.strftime('%Y-%m-%d')} do {available_end.strftime('%Y-%m-%d')}")
-                    successful, failed = self.download_date_range(symbol, existing_end + timedelta(days=1), available_end)
+                    successful_newer, failed_newer = self.download_date_range(symbol, existing_end + timedelta(days=1), available_end)
                 else:
+                    successful_newer, failed_newer = [], []
+                
+                # Połącz wyniki
+                successful = successful_older + successful_newer
+                failed = failed_older + failed_newer
+                
+                if not successful and not failed:
                     self.logger.info(f"{symbol}: Wszystkie dane orderbook są aktualne")
                     return True
+                    
             else:
                 # Pobierz wszystkie dostępne dane
                 self.logger.info(f"Pobieram wszystkie dostępne dane orderbook dla {symbol}")

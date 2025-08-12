@@ -1,10 +1,8 @@
 """
 Nowy moduł do etykietowania danych (`labeler4`).
-Dostosowany do nowego pipeline z feature_calculator_download2 (113 kolumn).
-Obsługuje etykietowanie pojedynczej pary i wszystkich par na raz.
+Dostosowany do danych z feature_calculator_ohlc_snapshot (85 kolumn) - jak labeler3.
 System 3-klasowy: LONG, SHORT, NEUTRAL
 """
-import argparse
 import logging
 import os
 import sys
@@ -52,7 +50,7 @@ class MultiLevelLabeler:
     """
     Klasa odpowiedzialna za obliczanie etykiet dla wielu poziomów TP/SL jednocześnie.
     Używa uproszczonego i poprawionego algorytmu 'competitive'.
-    Dostosowany do danych z feature_calculator_download2 (113 kolumn).
+    Dostosowany do danych z feature_calculator_ohlc_snapshot (85 kolumn) - jak labeler3.
     """
 
     def __init__(self):
@@ -176,7 +174,7 @@ class MultiLevelLabeler:
     def calculate_all_labels(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Główna funkcja obliczająca etykiety dla wszystkich poziomów TP/SL.
-        Przyjmuje DataFrame z cechami (113 kolumn) i dodaje kolumny z etykietami.
+        Przyjmuje DataFrame z cechami (123 kolumny) i dodaje kolumny z etykietami.
         """
         logger.info("Rozpoczynanie obliczania etykiet 3-klasowych dla wszystkich poziomów...")
         
@@ -186,13 +184,13 @@ class MultiLevelLabeler:
         if missing_cols:
             raise ValueError(f"Brakuje wymaganych kolumn OHLC: {missing_cols}")
         
-        # Sprawdź czy to są dane z feature_calculator_download2
+        # Sprawdź czy to są dane z feature_calculator_ohlc_snapshot
         expected_cols = ['bb_width', 'rsi_14', 'macd_hist', 'buy_sell_ratio_s1']
         found_feature_cols = [col for col in expected_cols if col in df.columns]
         if len(found_feature_cols) >= 2:
-            logger.info(f"Wykryto dane z feature_calculator_download2 (znalezione cechy: {found_feature_cols})")
+            logger.info(f"Wykryto dane z feature_calculator_ohlc_snapshot (znalezione cechy: {found_feature_cols})")
         else:
-            logger.warning("Nie wykryto typowych cech z feature_calculator_download2")
+            logger.warning("Nie wykryto typowych cech z feature_calculator_ohlc_snapshot")
         
         ohlc_data = df[['high', 'low', 'close']].to_numpy()
         timestamps = df.index.to_numpy()
@@ -285,26 +283,20 @@ class MultiLevelLabeler:
         
         return analysis
 
-def process_single_pair(symbol: str, input_dir: str = None, output_dir: str = None):
-    """Przetwarza pojedynczą parę."""
-    logger.info(f"--- Rozpoczynanie etykietowania pary: {symbol} ---")
+def main():
+    """Główna funkcja uruchamiająca proces etykietowania."""
+    logger.info("--- Rozpoczynanie procesu etykietowania (labeler4) ---")
+    logger.info(f"Moduł: {config.MODULE_INFO['name']} v{config.MODULE_INFO['version']}")
+    logger.info(f"Opis: {config.MODULE_INFO['description']}")
     
-    # Ścieżki plików
-    if input_dir:
-        input_path = Path(input_dir) / f"features_{symbol}.feather"
-    else:
-        input_path = config.get_input_file_path(symbol)
+    input_path = Path(config.INPUT_FILE_PATH)
+    logger.info(f"Wczytywanie danych z cechami z: {input_path}")
     
-    if output_dir:
-        output_path = Path(output_dir) / f"labeled_{symbol}.feather"
-    else:
-        output_path = config.get_output_file_path(symbol)
-    
-    # Sprawdź czy plik wejściowy istnieje
     if not input_path.exists():
         logger.error(f"Plik wejściowy nie istnieje: {input_path}")
-        return False
-    
+        logger.error(f"Sprawdź czy plik {config.INPUT_FILENAME} istnieje w {config.INPUT_DIR}")
+        sys.exit(1)
+        
     try:
         # Wczytaj dane z cechami
         df_with_features = pd.read_feather(input_path)
@@ -331,9 +323,20 @@ def process_single_pair(symbol: str, input_dir: str = None, output_dir: str = No
         logger.info("Rozkład etykiet:")
         for col, stats in analysis.items():
             logger.info(f"  {col}: {stats['percentages']}")
+            logger.info(f"    Procentowy rozkład: LONG {stats['percentages'].get('LONG', 0):.1f}%, SHORT {stats['percentages'].get('SHORT', 0):.1f}%, NEUTRAL {stats['percentages'].get('NEUTRAL', 0):.1f}%")
         
-        # Zapisywanie danych
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        # --- Tworzenie nazwy pliku wyjściowego ---
+        base_name = config.INPUT_FILENAME.replace('_features.feather', '').replace('.feather', '')
+        
+        output_filename = config.OUTPUT_FILENAME_TEMPLATE.format(
+            base_name=base_name,
+            fw=config.FUTURE_WINDOW_MINUTES,
+            levels_count=len(config.TP_SL_LEVELS)
+        )
+        output_path = config.OUTPUT_DIR / output_filename
+
+        # --- Zapisywanie danych ---
+        config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         df_labeled.reset_index().to_feather(output_path)
         logger.info(f"Zapisano dane z etykietami do: {output_path}")
         
@@ -348,93 +351,11 @@ def process_single_pair(symbol: str, input_dir: str = None, output_dir: str = No
 
         # Finalne statystyki
         logger.info(f"Finalny rozmiar danych: {len(df_labeled):,} wierszy, {len(df_labeled.columns)} kolumn")
-        logger.info(f"--- Etykietowanie pary {symbol} zakończone pomyślnie ---")
-        return True
+        logger.info("--- Proces etykietowania zakończony pomyślnie ---")
 
     except Exception as e:
-        logger.error(f"Błąd podczas etykietowania pary {symbol}: {e}", exc_info=True)
-        return False
-
-def process_all_pairs(input_dir: str = None, output_dir: str = None):
-    """Przetwarza wszystkie pary z konfiguracji."""
-    
-    # Pobierz listę par z konfiguracji
-    pairs = config.PAIRS
-    logger.info(f"Pobrano {len(pairs)} par z konfiguracji")
-    
-    # Inicjalizacja statystyk
-    total_start_time = time.time()
-    successful_pairs = 0
-    failed_pairs = []
-    
-    logger.info("=" * 80)
-    logger.info(f"ROZPOCZYNAM ETYKIETOWANIE WSZYSTKICH {len(pairs)} PAR")
-    logger.info("=" * 80)
-    
-    for i, pair in enumerate(pairs, 1):
-        logger.info(f"\n[{i}/{len(pairs)}] Etykietowanie pary: {pair}")
-        logger.info("-" * 50)
-        
-        # Przetwarzaj parę
-        success = process_single_pair(pair, input_dir, output_dir)
-        
-        if success:
-            successful_pairs += 1
-            logger.info(f"[SUCCESS] {pair}: Etykietowanie zakończone pomyślnie")
-        else:
-            failed_pairs.append(pair)
-            logger.error(f"[FAILED] {pair}: Etykietowanie nie powiodło się")
-    
-    # Podsumowanie
-    total_time = time.time() - total_start_time
-    logger.info("\n" + "=" * 80)
-    logger.info("PODSUMOWANIE ETYKIETOWANIA")
-    logger.info("=" * 80)
-    logger.info(f"[SUCCESS] Pomyślnie przetworzono: {successful_pairs}/{len(pairs)} par")
-    logger.info(f"[FAILED] Nieudane: {len(failed_pairs)} par")
-    logger.info(f"[TIME] Całkowity czas: {total_time:.2f} sekund ({total_time/60:.2f} minut)")
-    logger.info(f"[AVG] Średni czas na parę: {total_time/len(pairs):.2f} sekund")
-    
-    if failed_pairs:
-        logger.info("\n[FAILED] Lista nieudanych par:")
-        for pair in failed_pairs:
-            logger.info(f"  - {pair}")
-    
-    if output_dir:
-        logger.info(f"\n[OUTPUT] Pliki wynikowe w: {output_dir}")
-    else:
-        logger.info(f"\n[OUTPUT] Pliki wynikowe w: {config.OUTPUT_DIR}")
-    logger.info("=" * 80)
-
-def main():
-    """Główna funkcja uruchamiająca proces etykietowania."""
-    parser = argparse.ArgumentParser(description='Etykietowanie danych 3-klasowe (labeler4)')
-    parser.add_argument('--symbol', help='Symbol pary do etykietowania (np. ETHUSDT)')
-    parser.add_argument('--all-pairs', action='store_true',
-                       help='Etykietuj wszystkie pary z konfiguracji')
-    parser.add_argument('--input-dir', default=None,
-                       help='Katalog z plikami features (domyślnie: feature_calculator_download2/output)')
-    parser.add_argument('--output-dir', default=None,
-                       help='Katalog wyjściowy (domyślnie: labeler4/output)')
-    
-    args = parser.parse_args()
-    
-    logger.info("--- Rozpoczynanie procesu etykietowania (labeler4) ---")
-    logger.info(f"Moduł: {config.MODULE_INFO['name']} v{config.MODULE_INFO['version']}")
-    logger.info(f"Opis: {config.MODULE_INFO['description']}")
-    
-    # Jeśli używamy --all-pairs, przetwarzaj wszystkie pary
-    if args.all_pairs:
-        process_all_pairs(args.input_dir, args.output_dir)
-        return
-    
-    # Jeśli podano symbol, przetwarzaj pojedynczą parę
-    if args.symbol:
-        process_single_pair(args.symbol, args.input_dir, args.output_dir)
-        return
-    
-    # Domyślnie pokaż help
-    parser.print_help()
+        logger.error(f"Główny proces etykietowania napotkał błąd: {e}", exc_info=True)
+        sys.exit(1)
 
 if __name__ == "__main__":
     main() 

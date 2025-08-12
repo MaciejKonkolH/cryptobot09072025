@@ -1,6 +1,6 @@
 """
 Konfiguracja dla modułu etykietowania (`labeler4`).
-Dostosowany do nowego pipeline z feature_calculator_download2 (113 kolumn).
+Dostosowany do nowego pipeline z feature_calculator_download2 (123 kolumny).
 System 3-klasowy: LONG, SHORT, NEUTRAL
 Obsługuje etykietowanie pojedynczej pary i wszystkich par na raz.
 """
@@ -21,9 +21,10 @@ PAIRS = [
 ]
 
 # --- Konfiguracja Wejścia ---
-# Używamy plików z cechami z feature_calculator_download2
-INPUT_DIR = PROJECT_ROOT / "feature_calculator_download2" / "output"
-INPUT_FILENAME_TEMPLATE = "features_{symbol}.feather"
+# Używamy plików z cechami z feature_calculator_ohlc_snapshot (jak labeler3)
+INPUT_DIR = PROJECT_ROOT / "feature_calculator_ohlc_snapshot" / "output"
+INPUT_FILENAME = "ohlc_orderbook_features.feather"
+INPUT_FILE_PATH = INPUT_DIR / INPUT_FILENAME
 
 # --- Konfiguracja Wyjścia ---
 OUTPUT_DIR = MODULE_DIR / "output"
@@ -68,7 +69,7 @@ LABEL_MAPPING = {
 REVERSE_LABEL_MAPPING = {v: k for k, v in LABEL_MAPPING.items()}
 
 # --- Konfiguracja Wyjścia ---
-OUTPUT_FILENAME_TEMPLATE = "labeled_{symbol}.feather"
+OUTPUT_FILENAME_TEMPLATE = "{base_name}_labeled_3class_fw{fw}m_{levels_count}levels.feather"
 SAVE_CSV_COPY = False  # Czy zapisać kopię CSV
 
 def get_level_suffix(tp_pct: float, sl_pct: float) -> str:
@@ -83,24 +84,27 @@ def get_all_label_columns() -> list:
         label_columns.append(f"label_{suffix}")
     return label_columns
 
-def get_input_file_path(symbol: str) -> Path:
-    """Zwraca ścieżkę do pliku wejściowego dla danej pary."""
-    return INPUT_DIR / INPUT_FILENAME_TEMPLATE.format(symbol=symbol)
+def get_input_file_path(symbol: str = None) -> Path:
+    """Zwraca ścieżkę do pliku wejściowego (jak labeler3)."""
+    return INPUT_FILE_PATH
 
-def get_output_file_path(symbol: str) -> Path:
-    """Zwraca ścieżkę do pliku wyjściowego dla danej pary."""
-    return OUTPUT_DIR / OUTPUT_FILENAME_TEMPLATE.format(symbol=symbol)
+def get_output_file_path(symbol: str = None) -> Path:
+    """Zwraca ścieżkę do pliku wyjściowego (jak labeler3)."""
+    return OUTPUT_DIR / OUTPUT_FILENAME_TEMPLATE.format(
+        base_name="ohlc_orderbook",
+        fw=FUTURE_WINDOW_MINUTES,
+        levels_count=len(TP_SL_LEVELS)
+    )
 
 # --- Informacje o module ---
 MODULE_INFO = {
     'name': 'labeler4',
-    'version': '1.0.0',
-    'description': 'Moduł etykietowania 3-klasowy dla nowego pipeline (feature_calculator_download2)',
-    'input_format': 'feather (113 kolumn)',
+    'version': '2.0.0',
+    'description': 'Moduł etykietowania 3-klasowy dla danych z feature_calculator_ohlc_snapshot (jak labeler3)',
+    'input_format': 'feather (85 kolumn)',
     'output_format': 'feather + CSV',
     'labeling_strategy': '3-class directional (LONG/SHORT/NEUTRAL)',
     'future_window': f'{FUTURE_WINDOW_MINUTES} minut',
     'tp_sl_levels': len(TP_SL_LEVELS),
     'label_classes': 3,
-    'supported_pairs': len(PAIRS),
 } 

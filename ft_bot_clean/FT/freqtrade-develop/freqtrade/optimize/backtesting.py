@@ -471,6 +471,8 @@ class Backtesting:
                 pair, self.timeframe, df_analyzed, self.config["candle_type_def"]
             )
 
+
+            
             # Trim startup period from analyzed dataframe
             df_analyzed = processed[pair] = pair_data = trim_dataframe(
                 df_analyzed, self.timerange, startup_candles=self.required_startup
@@ -482,6 +484,8 @@ class Backtesting:
 
             # To avoid using data from future, we use entry/exit signals shifted
             # from the previous candle
+
+            
             for col in HEADERS[5:]:
                 tag_col = col in ("enter_tag", "exit_tag")
                 if col in df_analyzed.columns:
@@ -493,8 +497,14 @@ class Backtesting:
                 elif not df_analyzed.empty:
                     df_analyzed[col] = 0 if not tag_col else None
 
+            # DEBUG: Sprawdź sygnały SHORT przed usunięciem pierwszej świecy
+
+            
             df_analyzed = df_analyzed.drop(df_analyzed.head(1).index)
                     
+
+
+            
             # Convert from Pandas to list for performance reasons
             # (Looping Pandas is slow.)
             data[pair] = df_analyzed[HEADERS].values.tolist() if not df_analyzed.empty else []
@@ -1253,6 +1263,8 @@ class Backtesting:
         exit_long = row[ELONG_IDX] == 1
         enter_short = self._can_short and row[SHORT_IDX] == 1
         exit_short = self._can_short and row[ESHORT_IDX] == 1
+
+
 
         if enter_long == 1 and not any([exit_long, enter_short]):
             # Long

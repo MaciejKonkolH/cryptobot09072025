@@ -1,18 +1,10 @@
 """
-Model Loader - Ładowanie modeli XGBoost dla Enhanced ML Strategy
+Model Loader - Ładowanie modeli XGBoost dla Enhanced ML Strategy v7.0
 
-Odpowiedzialny za:
-- Ładowanie pojedynczego modelu XGBoost z pliku JSON
-- Ładowanie scalerów i metadanych
-- Obsługa 37 cech
-- Error handling per para
-- Cache modeli w pamięci
-
-NOWA STRUKTURA v4.0 (POJEDYNCZY MODEL):
-user_data/strategies/inputs/BTCUSDT/
-├── model_tp1p2_sl0p4.json  # Pojedynczy model XGBoost
-├── scaler.pkl              # RobustScaler
-└── metadata.json           # Metadane (37 cech, opis modelu)
+Aktualizacja pod training5 pipeline:
+- Modele zapisywane jako model_{index+1}.json w katalogu: crypto/training5/output/models/{SYMBOL}
+- Skaler: scaler.pkl
+- Metadane: metadata.json (zawiera feature_names, tp_sl_levels, label_columns)
 """
 
 import os
@@ -27,59 +19,71 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 class ModelLoader:
-    """Ładuje i zarządza modelami ML per para z nowej struktury inputs/"""
+    """Ładuje i zarządza modelami ML per para z training5 pipeline"""
     
-    def __init__(self, base_artifacts_path: str = "user_data/strategies/inputs"):
+    def __init__(self, base_artifacts_path: str = "C:/Users/macie/OneDrive/Python/Binance/crypto/training5/output/models"):
         """
         Inicjalizacja Model Loader
         
         Args:
-            base_artifacts_path: Bazowa ścieżka do modeli (domyślnie: user_data/strategies/inputs)
+            base_artifacts_path: Bazowa ścieżka do modeli training4
         """
         self.base_artifacts_path = base_artifacts_path
         self.models_cache = {}
         self.scalers_cache = {}
         self.metadata_cache = {}
         
+        # Informacyjnie: training5 również ma 15 poziomów TP/SL (kolejność w training5.config.TP_SL_LEVELS)
+        self.model_levels = [
+            {"index": i, "desc": f"model_{i+1}.json"} for i in range(15)
+        ]
+        
     def _convert_pair_to_directory_name(self, pair: str) -> str:
         """
         Konwertuje nazwę pary na nazwę katalogu
         
         Args:
-            pair: Nazwa pary (np. "BTC/USDT")
+            pair: Nazwa pary (np. "ETH/USDT")
             
         Returns:
-            str: Nazwa katalogu (np. "BTCUSDT")
+            str: Nazwa katalogu (np. "ETHUSDT")
         """
-        # Usuń "/" i zamień na format BTCUSDT
-        return pair.replace('/', '').replace(':', '')
+        # Usuń wszystkie znaki specjalne i zostaw tylko litery/cyfry
+        # Dla BTC/USDT:USDT -> BTCUSDT
+        result = pair.replace('/', '').replace(':', '').replace('-', '')
         
-    def load_model_for_pair(self, pair: str, model_dir: str = None) -> Tuple[Optional[Any], Optional[Any], Optional[Dict]]:
+        # Usuń duplikaty (BTCUSDTUSDT -> BTCUSDT)
+        if result.endswith('USDTUSDT'):
+            result = result[:-4]  # Usuń ostatnie 4 znaki (USDT)
+        
+        return result
+        
+    def load_model_for_pair(self, pair: str, model_index: int = 3, use_basic_features: bool = False) -> Tuple[Optional[Any], Optional[Any], Optional[Dict]]:
         """
-        Ładuje model XGBoost, scaler i metadata dla konkretnej pary
+        Ładuje model XGBoost, scaler i metadata dla konkretnej pary i modelu
         
         Args:
-            pair: Nazwa pary (np. "BTC/USDT")
-            model_dir: Nazwa katalogu z modelami (opcjonalne - auto-generowana z pair)
+            pair: Nazwa pary (np. "ETH/USDT")
+            model_index: Indeks modelu (0-14)
+            use_basic_features: True = 37 cech, False = 71 cech
             
         Returns:
             Tuple[model, scaler, metadata]: Załadowane komponenty lub None jeśli błąd
         """
-        # Auto-generuj model_dir jeśli nie podano
-        if model_dir is None:
-            model_dir = self._convert_pair_to_directory_name(pair)
-            
-        cache_key = f"{pair}_{model_dir}"
+        model_dir = self._convert_pair_to_directory_name(pair)
+        cache_key = f"{pair}_{model_dir}_{model_index}_{use_basic_features}"
         
         try:
-            # Sprawdź cache
-            if cache_key in self.models_cache:
-                logger.debug(f"📋 Using cached XGBoost model for {pair}")
-                return (
-                    self.models_cache[cache_key],
-                    self.scalers_cache[cache_key], 
-                    self.metadata_cache[cache_key]
-                )
+            # Bez cache (diagnostyka)
+            
+            # Waliduj model_index
+            if model_index < 0 or model_index >= len(self.model_levels):
+                logger.error(f"❌ {pair}: Invalid model_index: {model_index}. Must be 0-{len(self.model_levels)-1}")
+                return None, None, None
+            
+            # Informacja o modelu
+            model_info = self.model_levels[model_index]
+            desc = model_info['desc']
             
             # Waliduj że katalog istnieje
             artifacts_dir = os.path.join(self.base_artifacts_path, model_dir)
@@ -88,13 +92,14 @@ class ModelLoader:
                 logger.error(f"❌ {pair}: {error_msg}")
                 return None, None, None
             
-            # Załaduj metadata
-            metadata = self._load_metadata(artifacts_dir, pair)
+            # Załaduj metadata (training5: metadata.json)
+            metadata = self._load_metadata(artifacts_dir)
             if metadata is None:
-                return None, None, None
+                logger.warning(f"⚠️ Metadata not found for {pair} in {artifacts_dir}. Proceeding without feature_names.")
+                metadata = {}
             
-            # Załaduj model XGBoost
-            model = self._load_xgboost_model(artifacts_dir, pair)
+            # Załaduj model XGBoost (training5: model_{index+1}.json)
+            model = self._load_xgboost_model(artifacts_dir, model_index, metadata)
             if model is None:
                 return None, None, None
             
@@ -104,121 +109,94 @@ class ModelLoader:
                 return None, None, None
             
             # Waliduj kompatybilność modelu
-            if not self._validate_model_compatibility(metadata, pair):
+            if not self._validate_model_compatibility(metadata, pair, use_basic_features):
                 return None, None, None
             
-            # Cache załadowane komponenty
-            self.models_cache[cache_key] = model
-            self.scalers_cache[cache_key] = scaler
-            self.metadata_cache[cache_key] = metadata
+            # Brak cache (diagnostyka)
             
-            logger.info(f"✅ {pair}: XGBoost model loaded successfully from {artifacts_dir}")
+            logger.info(f"✅ {pair}: XGBoost model {model_index} loaded successfully ({desc})")
             logger.info(f"   - Features: {metadata.get('n_features', 'N/A')}")
-
             
             return model, scaler, metadata
             
         except Exception as e:
-            logger.error(f"❌ {pair}: Error loading model: {e}")
+            logger.error(f"❌ {pair}: Error loading model {model_index}: {e}")
+            import traceback
+            logger.error(f"❌ {pair}: Full traceback: {traceback.format_exc()}")
             return None, None, None
     
-    def _load_metadata(self, artifacts_dir: str, pair: str) -> Optional[Dict]:
-        """Ładuje metadata.json (NOWA NAZWA PLIKU)"""
+    def _load_metadata(self, artifacts_dir: str) -> Optional[Dict]:
+        """Ładuje metadata z training5 (metadata.json)"""
         try:
-            # 🔥 ZMIANA: metadata.json zamiast model_metadata.json
             metadata_path = os.path.join(artifacts_dir, "metadata.json")
             
             if not os.path.exists(metadata_path):
-                logger.error(f"❌ {pair}: metadata.json not found in {artifacts_dir}")
+                logger.error(f"❌ Metadata not found in {artifacts_dir}")
                 return None
             
             with open(metadata_path, 'r', encoding='utf-8') as f:
                 metadata = json.load(f)
             
-            logger.debug(f"✅ {pair}: Metadata loaded from metadata.json")
+            logger.debug(f"✅ Metadata loaded from metadata.json")
             return metadata
             
         except Exception as e:
-            logger.error(f"❌ {pair}: Error loading metadata: {e}")
+            logger.error(f"❌ Error loading metadata: {e}")
             return None
     
-    def _load_xgboost_model(self, artifacts_dir: str, pair: str) -> Optional[Any]:
-        """Ładuje pojedynczy model XGBoost z pliku JSON na podstawie metadata.json"""
+    def _load_xgboost_model(self, artifacts_dir: str, model_index: int, metadata: Optional[Dict]) -> Optional[Any]:
+        """Ładuje konkretny model XGBoost training5 (model_{index+1}.json)"""
         try:
             import xgboost as xgb
             import json
             
-            # Sprawdź czy istnieje metadata.json
-            metadata_path = os.path.join(artifacts_dir, "metadata.json")
-            if not os.path.exists(metadata_path):
-                logger.error(f"❌ {pair}: metadata.json not found in {artifacts_dir}")
+            # training5 nazewnictwo modeli
+            model_filename = f"model_{model_index+1}.json"
+            model_path = os.path.join(artifacts_dir, model_filename)
+            
+            if not os.path.exists(model_path):
+                logger.error(f"❌ Model file not found: {model_path}")
                 return None
             
-            # Załaduj metadata
-            with open(metadata_path, 'r') as f:
-                metadata = json.load(f)
+            logger.info(f"🔄 Loading XGBoost model: {model_filename}")
             
-            # Sprawdź czy to nowy format (osobne modele)
-            if metadata.get('model_type') == 'xgboost_individual':
-                # Nowy format: pojedynczy model JSON
-                model_filename = metadata.get('model_filename')
-                if not model_filename:
-                    logger.error(f"❌ {pair}: model_filename not found in metadata")
-                    return None
-                
-                model_path = os.path.join(artifacts_dir, model_filename)
-                if not os.path.exists(model_path):
-                    logger.error(f"❌ {pair}: Model file not found: {model_path}")
-                    return None
-                
-                logger.info(f"🔄 {pair}: Loading individual XGBoost model: {model_filename}")
-                
-                # Załaduj model
-                model = xgb.Booster()
-                model.load_model(model_path)
-                
-                # Stwórz wrapper kompatybilny z sklearn
-                class IndividualXGBoostWrapper:
-                    def __init__(self, model, feature_names):
-                        self.model = model
-                        self.feature_names = feature_names
-                        self.classes_ = np.array([0, 1, 2])  # LONG, SHORT, NEUTRAL
-                    
-                    def predict_proba(self, X):
-                        import xgboost as xgb
-                        dtest = xgb.DMatrix(X, feature_names=self.feature_names)
-                        probs = self.model.predict(dtest)
-                        return probs.reshape(-1, 3)
-                    
-                    def predict(self, X):
-                        probs = self.predict_proba(X)
-                        return np.argmax(probs, axis=1)
-                
-                wrapper = IndividualXGBoostWrapper(model, metadata.get('feature_names', []))
-                logger.info(f"✅ {pair}: Individual XGBoost model loaded successfully")
-                logger.info(f"  - Model: {metadata.get('model_description', 'Unknown')}")
-                logger.info(f"  - Features: {len(metadata.get('feature_names', []))}")
-                return wrapper
+            # Załaduj model
+            model = xgb.Booster()
+            model.load_model(model_path)
             
-            else:
-                # Stary format: sprawdź czy istnieje model.pkl (MultiOutputClassifier)
-                base_model_path = os.path.join(artifacts_dir, "model.pkl")
-                if os.path.exists(base_model_path):
-                    logger.info(f"🔄 {pair}: Loading XGBoost model from pickle file (legacy format)...")
-                    with open(base_model_path, 'rb') as f:
-                        model = pickle.load(f)
-                    logger.debug(f"✅ {pair}: XGBoost model loaded from pickle")
-                    return model
-                else:
-                    logger.error(f"❌ {pair}: No compatible model files found in {artifacts_dir}")
-                    return None
+            # Stwórz wrapper kompatybilny z sklearn
+            class IndividualXGBoostWrapper:
+                def __init__(self, model, feature_names, model_desc):
+                    self.model = model
+                    self.feature_names = feature_names
+                    self.model_desc = model_desc
+                    self.classes_ = np.array([0, 1, 2])  # LONG, SHORT, NEUTRAL
+                
+                def predict_proba(self, X):
+                    import xgboost as xgb
+                    dtest = xgb.DMatrix(X, feature_names=self.feature_names)
+                    probs = self.model.predict(dtest)
+                    return probs.reshape(-1, 3)
+                
+                def predict(self, X):
+                    probs = self.predict_proba(X)
+                    return np.argmax(probs, axis=1)
+            
+            # feature_names z metadata
+            feature_names = metadata.get('feature_names') if metadata else None
+            
+            wrapper = IndividualXGBoostWrapper(model, feature_names, f"model_{model_index+1}.json")
+            logger.info(f"✅ XGBoost model loaded successfully")
+            logger.info(f"  - Model: {wrapper.model_desc}")
+            logger.info(f"  - Features: {len(feature_names)}")
+            return wrapper
             
         except Exception as e:
-            logger.error(f"❌ {pair}: Error loading XGBoost model: {e}")
+            logger.error(f"❌ Error loading XGBoost model: {e}")
             return None
     
     def _load_scaler(self, artifacts_dir: str, pair: str) -> Optional[Any]:
-        """Ładuje scaler.pkl - obsługuje nowy format z metadata"""
+        """Ładuje scaler.pkl"""
         try:
             scaler_path = os.path.join(artifacts_dir, "scaler.pkl")
             
@@ -226,26 +204,16 @@ class ModelLoader:
                 logger.error(f"❌ {pair}: scaler.pkl not found in {artifacts_dir}")
                 return None
 
-            scaler_data = joblib.load(scaler_path)
-            
-            # Obsługa nowego formatu z metadata
-            if isinstance(scaler_data, dict) and 'scaler' in scaler_data:
-                # Nowy format: {'scaler': actual_scaler, 'scaler_type': ..., ...}
-                scaler = scaler_data['scaler']
-                logger.debug(f"✅ {pair}: Scaler loaded from metadata format (type: {scaler_data.get('scaler_type', 'unknown')})")
-            else:
-                # Stary format: bezpośrednio scaler object
-                scaler = scaler_data
-                logger.debug(f"✅ {pair}: Scaler loaded from legacy format")
-            
+            scaler = joblib.load(scaler_path)
+            logger.debug(f"✅ {pair}: Scaler loaded successfully")
             return scaler
             
         except Exception as e:
             logger.error(f"❌ {pair}: Error loading scaler: {e}")
             return None
     
-    def _validate_model_compatibility(self, metadata: Dict, pair: str) -> bool:
-        """Waliduje kompatybilność modelu XGBoost z strategią"""
+    def _validate_model_compatibility(self, metadata: Dict, pair: str, use_basic_features: bool) -> bool:
+        """Waliduje kompatybilność modelu z konfiguracją cech"""
         try:
             # Sprawdź czy ma wymagane pola
             required_fields = ['n_features', 'feature_names', 'model_type']
@@ -256,104 +224,53 @@ class ModelLoader:
             
             # Sprawdź typ modelu
             model_type = metadata.get('model_type')
-            if model_type not in ['xgboost_individual', 'xgboost_multioutput']:
+            if model_type != 'xgboost_individual':
                 logger.error(f"❌ {pair}: Unsupported model type: {model_type}")
                 return False
             
-            # Sprawdź liczbę cech (powinno być 37)
+            # Training5: akceptuj dowolną liczbę cech > 0 (lista cech przekazana w metadata)
             n_features = metadata.get('n_features', 0)
-            if n_features != 37:
-                logger.error(f"❌ {pair}: Expected 37 features, got {n_features}")
+            if not isinstance(n_features, int) or n_features <= 0:
+                logger.error(f"❌ {pair}: Invalid n_features in metadata: {n_features}")
                 return False
             
-            # Dla nowego formatu sprawdź czy ma model_filename
-            if model_type == 'xgboost_individual':
-                if 'model_filename' not in metadata:
-                    logger.error(f"❌ {pair}: Missing model_filename in individual model metadata")
-                    return False
-            
-            logger.debug(f"✅ {pair}: Model compatibility validated (type: {model_type})")
+            logger.debug(f"✅ {pair}: Model compatibility validated ({n_features} features)")
             return True
             
         except Exception as e:
             logger.error(f"❌ {pair}: Error validating model compatibility: {e}")
             return False
     
-    def _extract_window_size(self, metadata: Dict) -> int:
-        """
-        Wyciąga window_size z metadanych (obsługuje obie struktury)
-        
-        Args:
-            metadata: Metadane modelu
-            
-        Returns:
-            int: Window size lub default 60
-        """
-        try:
-            # 🔥 OBSŁUGA NOWEJ STRUKTURY METADATA.JSON
-            
-            # Sprawdź nową strukturę z training_config.sequence_length
-            if 'training_config' in metadata and 'sequence_length' in metadata['training_config']:
-                window_size = int(metadata['training_config']['sequence_length'])
-                logger.debug(f"✅ Window size extracted from training_config.sequence_length: {window_size}")
-                return window_size
-            
-            # Sprawdź starą strukturę z input_shape (backward compatibility)
-            elif 'input_shape' in metadata:
-                input_shape = metadata.get('input_shape', [60, 8])
-                window_size = int(input_shape[0])
-                logger.debug(f"✅ Window size extracted from input_shape: {window_size}")
-                return window_size
-            
-            else:
-                logger.warning("⚠️ Could not extract window_size from metadata, using default: 60")
-                return 60
-                
-        except (ValueError, IndexError, TypeError) as e:
-            logger.warning(f"⚠️ Error extracting window_size from metadata: {e}, using default: 60")
-            return 60
+    def get_model_info(self, model_index: int) -> Optional[Dict]:
+        """Pobiera informacje o modelu na podstawie indeksu"""
+        if 0 <= model_index < len(self.model_levels):
+            return self.model_levels[model_index]
+        return None
     
-    def get_window_size_for_pair(self, pair: str, model_dir: str = None) -> int:
-        """
-        Pobiera window_size dla pary bez ładowania całego modelu
-        
-        Args:
-            pair: Nazwa pary
-            model_dir: Katalog modelu (opcjonalne - auto-generowany)
-            
-        Returns:
-            int: Window size lub default 60
-        """
-        try:
-            if model_dir is None:
-                model_dir = self._convert_pair_to_directory_name(pair)
-                
-            artifacts_dir = os.path.join(self.base_artifacts_path, model_dir)
-            metadata = self._load_metadata(artifacts_dir, pair)
-            
-            if metadata:
-                return self._extract_window_size(metadata)
-            else:
-                logger.warning(f"⚠️ {pair}: Could not load metadata, using default window_size: 60")
-                return 60
-                
-        except Exception as e:
-            logger.warning(f"⚠️ {pair}: Error getting window_size: {e}, using default: 60")
-            return 60
+    def get_available_models(self) -> List[Dict]:
+        """Zwraca listę wszystkich dostępnych modeli"""
+        return self.model_levels.copy()
     
-    def clear_cache_for_pair(self, pair: str, model_dir: str = None) -> None:
+    def clear_cache_for_pair(self, pair: str, model_index: int = None, use_basic_features: bool = None) -> None:
         """Usuwa z cache model dla konkretnej pary"""
-        if model_dir is None:
-            model_dir = self._convert_pair_to_directory_name(pair)
-            
-        cache_key = f"{pair}_{model_dir}"
+        model_dir = self._convert_pair_to_directory_name(pair)
         
-        if cache_key in self.models_cache:
-            del self.models_cache[cache_key]
-        if cache_key in self.scalers_cache:
-            del self.scalers_cache[cache_key]
-        if cache_key in self.metadata_cache:
-            del self.metadata_cache[cache_key]
+        if model_index is not None and use_basic_features is not None:
+            # Usuń konkretny model
+            cache_key = f"{pair}_{model_dir}_{model_index}_{use_basic_features}"
+            if cache_key in self.models_cache:
+                del self.models_cache[cache_key]
+            if cache_key in self.scalers_cache:
+                del self.scalers_cache[cache_key]
+            if cache_key in self.metadata_cache:
+                del self.metadata_cache[cache_key]
+        else:
+            # Usuń wszystkie modele dla tej pary
+            keys_to_remove = [k for k in self.models_cache.keys() if k.startswith(f"{pair}_{model_dir}_")]
+            for key in keys_to_remove:
+                del self.models_cache[key]
+                del self.scalers_cache[key]
+                del self.metadata_cache[key]
             
         logger.info(f"🗑️ {pair}: Cache cleared")
     
@@ -370,39 +287,5 @@ class ModelLoader:
             'models_cached': len(self.models_cache),
             'scalers_cached': len(self.scalers_cache),
             'metadata_cached': len(self.metadata_cache),
-            'cached_pairs': list(self.models_cache.keys())
-        }
-    
-    def validate_artifacts_directory(self, model_dir: str, pair: str) -> Tuple[bool, List[str]]:
-        """
-        Waliduje czy katalog artifacts ma wszystkie wymagane pliki
-        
-        Args:
-            model_dir: Nazwa katalogu modelu (lub None dla auto-generacji)
-            pair: Nazwa pary
-            
-        Returns:
-            Tuple[bool, List[str]]: (success, missing_files)
-        """
-        if model_dir is None:
-            model_dir = self._convert_pair_to_directory_name(pair)
-            
-        artifacts_dir = os.path.join(self.base_artifacts_path, model_dir)
-        
-        if not os.path.exists(artifacts_dir):
-            return False, [f"Directory not found: {artifacts_dir}"]
-        
-        # 🔥 NOWE NAZWY PLIKÓW (ZAKTUALIZOWANE DLA H5 FORMAT)
-        required_files = [
-            "best_model.h5",       # Zmienione z .keras na .h5 (fix dla TensorFlow 2.15.0 LSTM bug)
-            "scaler.pkl",          # Bez zmian
-            "metadata.json"        # Zamiast model_metadata.json
-        ]
-        
-        missing_files = []
-        for filename in required_files:
-            file_path = os.path.join(artifacts_dir, filename)
-            if not os.path.exists(file_path):
-                missing_files.append(filename)
-        
-        return len(missing_files) == 0, missing_files 
+            'cached_pairs': list(set([k.split('_')[0] for k in self.models_cache.keys()]))
+        } 

@@ -8,7 +8,6 @@ import sys
 import argparse
 from typing import Optional
 import time
-from pathlib import Path
 
 import pandas as pd
 import numpy as np
@@ -19,23 +18,10 @@ from scipy import stats
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
-# Dodaj ścieżkę do modułu konfiguracyjnego
-sys.path.append('../download2/orderbook')
 try:
-    import config as orderbook_config
+    import feature_calculator_download2.config as config
 except ImportError:
-    # Fallback - zdefiniuj pary lokalnie
-    orderbook_config = None
-
-# Import konfiguracji
-try:
-    import feature_calculator_ohlc_snapshot.config as config
-except ImportError:
-    try:
-        import config
-    except ImportError:
-        print("Błąd: Nie można zaimportować konfiguracji!")
-        sys.exit(1)
+    import config
 
 def setup_logging():
     """Konfiguruje system logowania z logami w jednej linii."""
@@ -145,26 +131,8 @@ class OHLCOrderBookFeatureCalculator:
         # 7. Cechy wolumenu (1 cecha)
         logger.info("  -> Cechy wolumenu...")
         # Bezpieczne obliczanie zmiany wolumenu - użyj logarytmu żeby uniknąć infinity
-        volume_shifted = df['volume'].shift(1)
-        
-        # Bezpieczne obliczanie ratio
-        volume_ratio = np.where(
-            (volume_shifted > 0) & (df['volume'] > 0),
-            df['volume'] / volume_shifted,
-            np.where(
-                (volume_shifted == 0) & (df['volume'] > 0),
-                10.0,  # Jeśli poprzedni volume był 0, a obecny > 0, ustaw ratio na 10
-                np.where(
-                    (volume_shifted > 0) & (df['volume'] == 0),
-                    0.1,  # Jeśli obecny volume jest 0, a poprzedni > 0, ustaw ratio na 0.1
-                    1.0   # W innych przypadkach (0/0) ustaw ratio na 1
-                )
-            )
-        )
-        
-        # Bezpieczne logowanie
-        volume_change = np.log(volume_ratio)
-        df['volume_change_norm'] = pd.Series(volume_change, index=df.index).replace([np.inf, -np.inf], 0).fillna(0)
+        volume_ratio = df['volume'] / (df['volume'].shift(1) + 1e-8)
+        df['volume_change_norm'] = np.log(volume_ratio).replace([np.inf, -np.inf], 0).fillna(0)
         
         # 8. Cechy świec (2 cechy)
         logger.info("  -> Cechy świec...")
@@ -670,11 +638,10 @@ class OHLCOrderBookFeatureCalculator:
         # Volatility
         volatility = df['close'].pct_change().rolling(window=config.VOLATILITY_WINDOWS[1]).std()
         
-        # Uproszczona autokorelacja - użyj korelacji z poprzednim okresem
-        volatility_lag = volatility.shift(1)
-        
-        # Korelacja między obecną a poprzednią volatility w rolling window
-        persistence = volatility.rolling(window=config.VOLATILITY_WINDOWS[1], min_periods=2).corr(volatility_lag)
+        # Autokorelacja volatility (lag=1)
+        persistence = volatility.rolling(window=config.VOLATILITY_WINDOWS[1]).apply(
+            lambda x: x.autocorr(lag=1) if len(x) > 1 else 0
+        )
         
         # Clipping do zakresu 0-1
         persistence = np.clip(persistence, 0, 1)
@@ -965,95 +932,6 @@ class OHLCOrderBookFeatureCalculator:
         file_size = os.path.getsize(file_path) / (1024 * 1024)  # MB
         logger.info(f"Zapisano: {file_path} ({file_size:.2f} MB)")
 
-def process_all_pairs(input_dir: str, output_dir: str, start_date: str = None, end_date: str = None):
-    """Przetwarza wszystkie pary z konfiguracji orderbook."""
-    
-    # Pobierz listę par z konfiguracji
-    if orderbook_config:
-        pairs = orderbook_config.PAIRS
-        logger.info(f"Pobrano {len(pairs)} par z konfiguracji orderbook")
-    else:
-        # Fallback - standardowe pary
-        pairs = [
-            "ETHUSDT", "BCHUSDT", "XRPUSDT", "LTCUSDT", "TRXUSDT", "ETCUSDT", 
-            "LINKUSDT", "XLMUSDT", "ADAUSDT", "XMRUSDT", "DASHUSDT", "ZECUSDT", 
-            "XTZUSDT", "ATOMUSDT", "BNBUSDT", "ONTUSDT", "IOTAUSDT", "BATUSDT", 
-            "VETUSDT", "NEOUSDT"
-        ]
-        logger.info(f"Używam standardowej listy {len(pairs)} par")
-    
-    # Inicjalizacja kalkulatora
-    calculator = OHLCOrderBookFeatureCalculator()
-    
-    # Konwersja dat jeśli podano
-    start_dt = pd.to_datetime(start_date) if start_date else None
-    end_dt = pd.to_datetime(end_date) if end_date else None
-    
-    # Statystyki
-    total_start_time = time.time()
-    successful_pairs = 0
-    failed_pairs = []
-    
-    logger.info("=" * 80)
-    logger.info(f"ROZPOCZYNAM PRZETWARZANIE WSZYSTKICH {len(pairs)} PAR")
-    logger.info("=" * 80)
-    
-    for i, pair in enumerate(pairs, 1):
-        logger.info(f"\n[{i}/{len(pairs)}] Przetwarzanie pary: {pair}")
-        logger.info("-" * 50)
-        
-        # Ścieżki plików
-        input_file = os.path.join(input_dir, f"merged_{pair}.feather")
-        output_file = os.path.join(output_dir, f"features_{pair}.feather")
-        
-        # Sprawdź czy plik wejściowy istnieje
-        if not os.path.exists(input_file):
-            logger.error(f"❌ Plik wejściowy nie istnieje: {input_file}")
-            failed_pairs.append((pair, "Plik wejściowy nie istnieje"))
-            continue
-        
-        try:
-            # Wczytanie danych
-            df = calculator.load_data(input_file)
-            if df is None:
-                logger.error(f"❌ Nie można wczytać danych dla {pair}")
-                failed_pairs.append((pair, "Błąd wczytywania danych"))
-                continue
-            
-            # Obliczanie cech
-            start_time = time.time()
-            df_features = calculator.calculate_features(df, start_dt, end_dt)
-            elapsed_time = time.time() - start_time
-            
-            # Zapisanie wyników
-            calculator.save_data(df_features, output_file)
-            
-            logger.info(f"✅ {pair}: {len(df_features):,} wierszy, {len(df_features.columns)} kolumn, {elapsed_time:.2f}s")
-            successful_pairs += 1
-            
-        except Exception as e:
-            logger.error(f"❌ Błąd podczas przetwarzania {pair}: {str(e)}")
-            failed_pairs.append((pair, str(e)))
-            continue
-    
-    # Podsumowanie
-    total_time = time.time() - total_start_time
-    logger.info("\n" + "=" * 80)
-    logger.info("PODSUMOWANIE PRZETWARZANIA")
-    logger.info("=" * 80)
-    logger.info(f"✅ Pomyślnie przetworzono: {successful_pairs}/{len(pairs)} par")
-    logger.info(f"❌ Nieudane: {len(failed_pairs)} par")
-    logger.info(f"⏱️  Całkowity czas: {total_time:.2f} sekund ({total_time/60:.2f} minut)")
-    logger.info(f"📊 Średni czas na parę: {total_time/len(pairs):.2f} sekund")
-    
-    if failed_pairs:
-        logger.info("\n❌ Lista nieudanych par:")
-        for pair, error in failed_pairs:
-            logger.info(f"  - {pair}: {error}")
-    
-    logger.info(f"\n📁 Pliki wynikowe w: {output_dir}")
-    logger.info("=" * 80)
-
 def main():
     """Główna funkcja."""
     parser = argparse.ArgumentParser(description='Oblicza cechy OHLC + Orderbook')
@@ -1063,30 +941,9 @@ def main():
                        help='Ścieżka do pliku wyjściowego')
     parser.add_argument('--start-date', help='Data początkowa (YYYY-MM-DD)')
     parser.add_argument('--end-date', help='Data końcowa (YYYY-MM-DD)')
-    parser.add_argument('--all-pairs', action='store_true',
-                       help='Przetwarzaj wszystkie pary z konfiguracji orderbook')
-    parser.add_argument('--input-dir', default='../download2/merge/merged_data',
-                       help='Katalog z plikami merged (używany z --all-pairs)')
-    parser.add_argument('--output-dir', default='output',
-                       help='Katalog wyjściowy (używany z --all-pairs)')
     
     args = parser.parse_args()
     
-    # Jeśli używamy --all-pairs, przetwarzaj wszystkie pary
-    if args.all_pairs:
-        # Utwórz katalog wyjściowy jeśli nie istnieje
-        os.makedirs(args.output_dir, exist_ok=True)
-        
-        # Przetwarzaj wszystkie pary
-        process_all_pairs(
-            input_dir=args.input_dir,
-            output_dir=args.output_dir,
-            start_date=args.start_date,
-            end_date=args.end_date
-        )
-        return
-    
-    # Standardowe przetwarzanie pojedynczej pary
     logger.info("ROZPOCZYNAM OBLICZANIE CECH OHLC + ORDERBOOK")
     logger.info("=" * 60)
     

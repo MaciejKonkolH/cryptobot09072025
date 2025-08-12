@@ -188,7 +188,11 @@ def save_training_results_to_markdown(evaluation_results, model_params, data_inf
         f.write(f"- ENABLE_CLASS_WEIGHTS_IN_TRAINING: {model_params.get('enable_class_weights_in_training', 'N/A')}\n")
         f.write(f"- ENABLE_WEIGHTED_LOSS: {model_params.get('enable_weighted_loss', 'N/A')}\n")
         f.write(f"- GAMMA: {model_params.get('gamma', 'N/A')}\n")
-        f.write(f"- RANDOM_STATE: {model_params.get('random_state', 'N/A')}\n\n")
+        f.write(f"- RANDOM_STATE: {model_params.get('random_state', 'N/A')}\n")
+        # Parametry regularyzacji
+        f.write(f"- REG_ALPHA (L1): {model_params.get('reg_alpha', 'N/A')}\n")
+        f.write(f"- REG_LAMBDA (L2): {model_params.get('reg_lambda', 'N/A')}\n")
+        f.write(f"- MIN_CHILD_WEIGHT: {model_params.get('min_child_weight', 'N/A')}\n\n")
         
         # Informacje o danych
         f.write("## 📋 INFORMACJE O DANYCH\n")
@@ -247,12 +251,44 @@ def save_training_results_to_markdown(evaluation_results, model_params, data_inf
                 f.write(f"Accuracy: {accuracy:.4f}\n")
                 
                 # Metryki per klasa
+                long_precision = 0
+                short_precision = 0
                 for class_name in ['LONG', 'SHORT', 'NEUTRAL']:
                     if class_name in class_report:
                         precision = class_report[class_name].get('precision', 0)
                         recall = class_report[class_name].get('recall', 0)
                         f1 = class_report[class_name].get('f1-score', 0)
                         f.write(f"{class_name}: P={precision:.3f}, R={recall:.3f}, F1={f1:.3f}\n")
+                        
+                        # Zapisz precision dla LONG i SHORT
+                        if class_name == 'LONG':
+                            long_precision = precision
+                        elif class_name == 'SHORT':
+                            short_precision = precision
+                
+                # Oblicz accuracy dla SHORT i LONG razem (ważona ilością transakcji)
+                if len(conf_matrix) >= 3:
+                    long_transactions = sum(conf_matrix[0])  # Wszystkie predykcje LONG
+                    short_transactions = sum(conf_matrix[1])  # Wszystkie predykcje SHORT
+                    total_trading_transactions = long_transactions + short_transactions
+                    
+                    if total_trading_transactions > 0:
+                        weighted_accuracy = (long_transactions * long_precision + short_transactions * short_precision) / total_trading_transactions
+                        f.write(f"Accuracy SHORT+LONG (ważona): {weighted_accuracy:.4f}\n")
+                
+                # Oblicz próg opłacalności
+                tp, sl = _get_tp_sl_values(level_desc)
+                if tp and sl:
+                    profitability_threshold = sl / (sl + tp) * 100
+                    f.write(f"Próg opłacalności: {profitability_threshold:.2f}%\n")
+                    
+                    # Oblicz różnicę (marżę bezpieczeństwa)
+                    if total_trading_transactions > 0:
+                        if weighted_accuracy > 0:
+                            safety_margin = (weighted_accuracy * 100) - profitability_threshold
+                            f.write(f"Marża bezpieczeństwa: {safety_margin:.2f}%\n")
+                        else:
+                            f.write(f"Marża bezpieczeństwa: BRAK SYGNAŁÓW (model nie przewiduje transakcji)\n")
                 
                 # Analiza dochodowości dla standardowych metryk
                 tp, sl = _get_tp_sl_values(level_desc)
@@ -298,12 +334,43 @@ def save_training_results_to_markdown(evaluation_results, model_params, data_inf
                             
                             # Metryki per klasa dla tego progu
                             high_conf_class_report = conf_result['classification_report']
+                            long_precision = 0
+                            short_precision = 0
                             for class_name in ['LONG', 'SHORT', 'NEUTRAL']:
                                 if class_name in high_conf_class_report:
                                     precision = high_conf_class_report[class_name].get('precision', 0)
                                     recall = high_conf_class_report[class_name].get('recall', 0)
                                     f1 = high_conf_class_report[class_name].get('f1-score', 0)
                                     f.write(f"{class_name}: P={precision:.3f}, R={recall:.3f}, F1={f1:.3f}\n")
+                                    
+                                    # Zapisz precision dla LONG i SHORT
+                                    if class_name == 'LONG':
+                                        long_precision = precision
+                                    elif class_name == 'SHORT':
+                                        short_precision = precision
+                            
+                            # Oblicz accuracy dla SHORT i LONG razem (ważona ilością transakcji)
+                            if len(high_conf_conf_matrix) >= 3:
+                                long_transactions = sum(high_conf_conf_matrix[0])  # Wszystkie predykcje LONG
+                                short_transactions = sum(high_conf_conf_matrix[1])  # Wszystkie predykcje SHORT
+                                total_trading_transactions = long_transactions + short_transactions
+                                
+                                if total_trading_transactions > 0:
+                                    weighted_accuracy = (long_transactions * long_precision + short_transactions * short_precision) / total_trading_transactions
+                                    f.write(f"Accuracy SHORT+LONG (ważona): {weighted_accuracy:.4f}\n")
+                            
+                            # Oblicz próg opłacalności
+                            if tp and sl:
+                                profitability_threshold = sl / (sl + tp) * 100
+                                f.write(f"Próg opłacalności: {profitability_threshold:.2f}%\n")
+                                
+                                # Oblicz różnicę (marżę bezpieczeństwa)
+                                if total_trading_transactions > 0:
+                                    if weighted_accuracy > 0:
+                                        safety_margin = (weighted_accuracy * 100) - profitability_threshold
+                                        f.write(f"Marża bezpieczeństwa: {safety_margin:.2f}%\n")
+                                    else:
+                                        f.write(f"Marża bezpieczeństwa: BRAK SYGNAŁÓW (model nie przewiduje transakcji)\n")
                             
                             # Analiza dochodowości dla tego progu
                             if tp and sl and high_conf_conf_matrix is not None:
@@ -378,9 +445,23 @@ def _calculate_profit_from_confusion_matrix(confusion_matrix, tp, sl, signal_typ
     if total_trades == 0:
         return 0.0
     
-    # Procent składany: Kapitał_końcowy = Kapitał_początkowy × (1 + TP/100)^profitable × (1 - SL/100)^losing
-    tp_multiplier = (1 + tp / 100) ** profitable
-    sl_multiplier = (1 - sl / 100) ** losing
+    # PRAWIDŁOWE OBLICZENIE: Procent składany dla każdej transakcji
+    # Kapitał_końcowy = Kapitał_początkowy × (1 + TP/100)^profitable × (1 - SL/100)^losing
+    
+    # Konwersja procentów na dziesiętne
+    tp_decimal = tp / 100
+    sl_decimal = sl / 100
+    
+    # Obliczenie końcowego kapitału
+    if profitable > 0:
+        tp_multiplier = (1 + tp_decimal) ** profitable
+    else:
+        tp_multiplier = 1.0
+        
+    if losing > 0:
+        sl_multiplier = (1 - sl_decimal) ** losing
+    else:
+        sl_multiplier = 1.0
     
     final_capital = tp_multiplier * sl_multiplier
     
@@ -411,9 +492,21 @@ def _calculate_combined_profit_from_confusion_matrix(confusion_matrix, tp, sl):
     if total_trades == 0:
         return 0.0
     
-    # Łączny procent składany
-    tp_multiplier = (1 + tp / 100) ** total_profitable
-    sl_multiplier = (1 - sl / 100) ** total_losing
+    # PRAWIDŁOWE OBLICZENIE: Łączny procent składany
+    # Konwersja procentów na dziesiętne
+    tp_decimal = tp / 100
+    sl_decimal = sl / 100
+    
+    # Obliczenie końcowego kapitału
+    if total_profitable > 0:
+        tp_multiplier = (1 + tp_decimal) ** total_profitable
+    else:
+        tp_multiplier = 1.0
+        
+    if total_losing > 0:
+        sl_multiplier = (1 - sl_decimal) ** total_losing
+    else:
+        sl_multiplier = 1.0
     
     final_capital = tp_multiplier * sl_multiplier
     

@@ -24,7 +24,7 @@ try:
 except ImportError:
     # Fallback - zdefiniuj podstawową konfigurację
     PAIRS = [
-        'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'XRPUSDT', 'BCHUSDT', 'LTCUSDT', 
+        'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'XRPUSDT', 'BCHUSDT', 'LTCUSDT', 
         'LINKUSDT', 'TRXUSDT', 'ETCUSDT', 'XLMUSDT', 'XMRUSDT', 'DASHUSDT', 
         'ZECUSDT', 'XTZUSDT', 'ATOMUSDT', 'BATUSDT', 'IOTAUSDT', 'NEOUSDT', 
         'VETUSDT', 'ONTUSDT'

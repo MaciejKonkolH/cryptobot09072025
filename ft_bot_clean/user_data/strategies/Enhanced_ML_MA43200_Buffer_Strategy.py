@@ -1,201 +1,237 @@
 """
-🚀 ARCHITEKTURA V7 - Enhanced XGBoost Strategy 🚀
+Enhanced ML Strategy v7.0 - FreqTrade Strategy with XGBoost ML Models
 
-Zgodnie z ostatecznym, precyzyjnym planem, ta strategia implementuje
-XGBoost z 37 cechami i pojedynczym modelem.
+OPTYMALIZOWANA WERSJA V7.0:
+- XGBoost Single Model predictions z training4 pipeline
+- 37 lub 71 cech (konfigurowalne per para)
+- 15 modeli (różne poziomy TP/SL)
+- Wybór modelu per para
+- Konfiguracja w pair_config.json
 
-✅ TRYB BACKTEST:
-- Przetwarzanie "świeca po świecy".
-- Dla każdego punktu w czasie, Bufor buduje od zera pełny kontekst historyczny
-  (43,200+ świec), oblicza wskaźniki i 37 kluczowych cech.
-- Zwracana jest gotowa do predykcji dataframe z 37 cechami.
+Odpowiedzialny za:
+- Ładowanie modeli XGBoost z training4 pipeline
+- Generowanie sygnałów ML per para
+- Zarządzanie parami walutowymi
+- Error handling i fallback
+- Backtest i live trading
 
-📝 TRYB LIVE:
-- Przetwarzanie na paczkach 60 świec.
-- Jednorazowa synchronizacja na starcie w celu wypełnienia "luki" w danych.
-- Inteligentne łączenie danych i okresowy zapis na dysk w celu zapewnienia
-  ciągłości i wydajności.
+NOWA STRUKTURA v7.0:
+- ModelLoader: Ładowanie modeli z training4
+- SignalGenerator: Generowanie sygnałów (37/71 cech)
+- PairManager: Zarządzanie parami i konfiguracją
+- Konfiguracja per para w pair_config.json
 """
 
 import logging
 import numpy as np
 import pandas as pd
-import os
-import sys
+import talib.abstract as ta
+import freqtrade.vendor.qtpylib.indicators as qtpylib
+from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from freqtrade.strategy import IStrategy, IntParameter, DecimalParameter
+from freqtrade.strategy.parameters import CategoricalParameter
+from freqtrade.persistence import Trade
 
-from freqtrade.strategy import IStrategy, IntParameter
-from freqtrade.strategy.interface import IStrategy
-from freqtrade.enums import RunMode
-from freqtrade.exceptions import DependencyException
-
-# 🚀 SETUP PROJECT PATH 🚀
-# To zapewnia, że importy działają poprawnie, niezależnie od sposobu uruchomienia.
-# ft_bot_clean/user_data/strategies/ -> ft_bot_clean/user_data/ -> ft_bot_clean/
-project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-if project_root not in sys.path:
-    sys.path.append(project_root)
-
-# Importy komponentów
-from user_data.strategies.components.signal_generator import SignalGenerator
-from user_data.strategies.utils.model_loader import ModelLoader
-from user_data.strategies.utils.pair_manager import PairManager
+# Import custom components
+from utils.model_loader import ModelLoader
+from utils.pair_manager import PairManager
+from components.signal_generator import SignalGenerator
 
 logger = logging.getLogger(__name__)
 
 class Enhanced_ML_MA43200_Buffer_Strategy(IStrategy):
-    strategy_name = "Enhanced_ML_MA43200_Buffer_Strategy_v7"
-    timeframe = '1m'
-    startup_candle_count: int = 0
-
-    # ROI table:
-    minimal_roi = {
-        "0": 0.008
-    }
-
-    # Stoploss:
-    stoploss = -0.003
-
-    # Trailing stop:
-    trailing_stop = False
-
-    # Wymuś opłaty na poziomie 0
-    def custom_fee(self, pair: str, side: str, amount: float, price: float, 
-                   taker_or_maker: str) -> float:
-        """Wymusza opłaty na poziomie 0 dla backtestingu"""
-        return 0.0
+    """
+    Enhanced ML Strategy v7.0 - FreqTrade Strategy with XGBoost ML Models
     
-    can_short = True
-    position_adjustment_enable = False
-    use_exit_signal = False
+    NOWA STRUKTURA v7.0:
+    - Obsługa 15 modeli (różne poziomy TP/SL)
+    - Obsługa 37 lub 71 cech (konfigurowalne)
+    - Konfiguracja per para w pair_config.json
+    - Wybór modelu per para
+    """
+    
+    # === STRATEGY METADATA ===
+    INTERFACE_VERSION = 3
+    minimal_roi = {
+        "0": 0.01
+    }
+    
+    stoploss = -0.02
+    
+    # === TIMEFRAME & CANDLE SETTINGS ===
+    timeframe = '1m'
+    process_only_new_candles = True
+    use_exit_signal = True
     exit_profit_only = False
-    exit_profit_offset = 0.0
     ignore_roi_if_entry_signal = False
+    
+    # === POSITION SIZING ===
+    position_adjustment_enable = False
+    use_custom_stoploss = False
+    
+    # === TRADING RULES ===
+    startup_candle_count = 0  # Brak usuwania świec startup
+    can_short = True  # Włącz obsługę pozycji SHORT
+    trailing_stop = False
+    trailing_stop_positive = None
+    trailing_stop_positive_offset = 0.0
+    trailing_only_offset_is_reached = False
+    
+    # === ML CONFIGURATION ===
+    # Parametry ML będą pobierane z konfiguracji par
+    ml_enabled = True
+    ml_fallback_enabled = True
+    
 
-    order_types = {
-        'entry': 'limit',
-        'exit': 'limit',
-        'stoploss': 'market',
-        'stoploss_on_exchange': True,
-        'stoploss_on_exchange_interval': 60,
-    }
-
-    order_time_in_force = {
-        'entry': 'GTC',
-        'exit': 'GTC',
-    }
-
-    # Parametry strategii
-    stake_currency = 'USDT'
-    stake_amount = 120
-    unfilledtimeout = {
-        'entry': 10,
-        'unit': 'minutes',
-        'exit_timeout_count': 0,
-    }
-    max_open_trades = 100
-
-    def __init__(self, config: dict = None) -> None:
+    
+    # === ML THRESHOLDS ===
+    # Progi pewności dla sygnałów ML
+    ml_long_threshold = 0.5
+    ml_short_threshold = 0.5
+    ml_neutral_threshold = 0.5
+    
+    # === STRATEGY COMPONENTS ===
+    model_loader = None
+    pair_manager = None
+    signal_generator = None
+    
+    def __init__(self, config: dict) -> None:
+        """
+        Inicjalizacja strategii v7.0
+        """
         super().__init__(config)
         
-        # Konfiguracja ML
-        self.ml_config = config.get('ml_config', {}) if config else {}
-        self.enabled = self.ml_config.get('enabled', True)
+        # DEBUG: Sprawdzamy can_short
+        logger.info(f"🔍 DEBUG: can_short = {self.can_short}")
         
-        # Inicjalizacja komponentów
-        self.signal_generator = SignalGenerator(self.ml_config)
-        self.model_loader = ModelLoader()
-        self.pair_manager = PairManager()
+        # Status tracking
+        self.ml_models_loaded = {}
+        self.ml_errors = {}
+        self.last_model_reload = None
         
-        # Cache dla modeli i scalerów
-        self.models_cache = {}
-        self.scalers_cache = {}
-        
-        # Dane z cechami (załadowane raz na początku)
+        # Dane z cechami
         self.features_data = None
         self.features_loaded = False
         
         # Log predykcji
         self.predictions_log = []
+
+        # Historia cen zamknięcia per para (do wyznaczania ceny wejścia = close poprzedniej świecy)
+        self._close_hist: Dict[str, pd.DataFrame] = {}
         
-        # Konfiguracja backtestingu
-        self._load_backtest_config()
-
-    def _load_backtest_config(self) -> None:
-        """Ładuje konfigurację dla backtestingu."""
-        self.ml_confidence_short = self.ml_config.get('confidence_threshold_short', 0.40)
-        self.ml_confidence_long = self.ml_config.get('confidence_threshold_long', 0.40)
-        self.ml_confidence_neutral = self.ml_config.get('confidence_threshold_neutral', 0.30)
-
-
-    def bot_start(self, **kwargs) -> None:
-        """Inicjalizacja na starcie bota."""
-        if not self.enabled:
-            logger.warning("❌ ML Strategy jest wyłączona w konfiguracji.")
-            return
+        # Inicjalizuj komponenty ML
+        self._initialize_ml_components()
+        
+        logger.info("🚀 Enhanced ML Strategy v7.0 initialized")
+    
+    def _initialize_ml_components(self):
+        """Inicjalizuje komponenty ML"""
+        try:
+            # Inicjalizuj Pair Manager
+            self.pair_manager = PairManager()
             
-        logger.info("🚀 Enhanced ML Strategy v7.0 (Single Model Architecture) initialized!")
-        
-        # Logowanie konfiguracji ML
-        logger.info(f"🔧 Konfiguracja ML:")
-        logger.info(f"   - Progi pewności: SHORT={self.ml_confidence_short}, LONG={self.ml_confidence_long}, NEUTRAL={self.ml_confidence_neutral}")
-        logger.info(f"   - Model: Pojedynczy model ładowany z metadata.json")
-        
-        # Przekaż progi pewności do SignalGenerator
-        self.signal_generator.set_thresholds(
-            short_threshold=self.ml_confidence_short,
-            long_threshold=self.ml_confidence_long,
-            neutral_threshold=self.ml_confidence_neutral
-        )
-        
-        # Inicjalizacja systemu wieloparowego
-        self._initialize_multi_pair_system()
-        
-        # Ładowanie danych z cechami
-        self._load_features_data()
-
-    def _initialize_multi_pair_system(self) -> None:
-        """Inicjalizuje system wieloparowy."""
-        logger.info("🔄 Inicjalizacja systemu wieloparowego...")
-        
-        # Pobierz listę par z konfiguracji
-        pairs = self.config.get('pair_whitelist', [])
-        if not pairs:
-            # Fallback - użyj par z pairlist
-            pairs = ["BTC/USDT:USDT"]
-            logger.info(f"🔄 Używam domyślnej pary: {pairs}")
+            # Inicjalizuj Model Loader (training5 artifacts)
+            self.model_loader = ModelLoader()
             
-        # Inicjalizuj pary
-        self._initialize_models_for_pairs(pairs)
+            # Inicjalizuj Signal Generator
+            self.signal_generator = SignalGenerator()
+            
+            # Brak preload/cachowania modelu i skalera na starcie (diagnostyka)
 
-    def _initialize_models_for_pairs(self, pairs: list) -> None:
-        """Inicjalizuje modele dla wszystkich par."""
-        logger.info(f"🔄 Inicjalizacja modeli dla {len(pairs)} par...")
+            # Ustaw progi ML
+            self.signal_generator.set_thresholds(
+                self.ml_long_threshold,
+                self.ml_short_threshold,
+                self.ml_neutral_threshold
+            )
+            
+            logger.info("✅ ML components initialized successfully")
+            
+        except Exception as e:
+            logger.error(f"❌ Error initializing ML components: {e}")
+            self.ml_enabled = False
+    
+    def populate_indicators(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
+        """
+        Główna metoda FreqTrade - wywoływana dla każdej świecy.
+        """
+        pair = metadata['pair']
+        logger.info(f"🔍 {pair}: populate_indicators - ml_enabled={self.ml_enabled}, features_loaded={self.features_loaded}")
         
-        for pair in pairs:
+        if not self.ml_enabled:
+            logger.warning(f"❌ {pair}: ML Strategy jest wyłączona.")
+            return dataframe
+            
+        if not self.features_loaded:
+            logger.error(f"❌ {pair}: Dane z cechami nie zostały załadowane.")
+            return dataframe
+        
+        # Wybierz tryb działania na podstawie runmode
+        if hasattr(self, 'dp') and self.dp and hasattr(self.dp, 'runmode'):
+            if self.dp.runmode.value == 'backtest':
+                # Zapisz historię close dla pary (do custom_entry_price)
+                try:
+                    if 'date' in dataframe.columns and 'close' in dataframe.columns:
+                        tmp_df = dataframe[['date', 'close']].copy()
+                        tmp_df.set_index('date', inplace=True)
+                        self._close_hist[pair] = tmp_df
+                except Exception:
+                    pass
+                return self._populate_for_backtest(dataframe, pair)
+            else:
+                try:
+                    if 'date' in dataframe.columns and 'close' in dataframe.columns:
+                        tmp_df = dataframe[['date', 'close']].copy()
+                        tmp_df.set_index('date', inplace=True)
+                        self._close_hist[pair] = tmp_df
+                except Exception:
+                    pass
+                return self._populate_for_live(dataframe, pair)
+        else:
+            # Domyślnie backtest
             try:
-                # Załaduj model, scaler i metadata
-                model, scaler, metadata = self.model_loader.load_model_for_pair(pair)
-                
-                if model and scaler:
-                    normalized_pair = self._normalize_pair_name(pair)
-                    self.models_cache[normalized_pair] = model
-                    self.scalers_cache[normalized_pair] = scaler
-                    
-                    logger.info(f"✅ {pair}: Model i scaler załadowane pomyślnie.")
-                else:
-                    logger.error(f"❌ {pair}: Nie udało się załadować modelu lub scalera.")
-                    
-            except Exception as e:
-                logger.error(f"❌ {pair}: Błąd podczas ładowania modelu: {e}")
+                if 'date' in dataframe.columns and 'close' in dataframe.columns:
+                    tmp_df = dataframe[['date', 'close']].copy()
+                    tmp_df.set_index('date', inplace=True)
+                    self._close_hist[pair] = tmp_df
+            except Exception:
+                pass
+            return self._populate_for_backtest(dataframe, pair)
+
+    def _pair_to_symbol(self, pair: str) -> str:
+        """Konwertuje nazwę pary do symbolu zgodnego z artefaktami training5 (np. BTC/USDT:USDT -> BTCUSDT)."""
+        result = pair.replace('/', '').replace(':', '').replace('-', '')
+        if result.endswith('USDTUSDT'):
+            result = result[:-4]
+        return result
 
     def _load_features_data(self) -> None:
-        """Ładuje dane z cechami z pliku labeler3 (ten sam plik co używany podczas treningu)."""
+        """Ładuje dane z cechami z pipeline'u training5 (labeler5 output)."""
         try:
-            # Ścieżka do pliku z cechami z labeler3 (bezwzględna)
-            features_path = Path("C:/Users/macie/OneDrive/Python/Binance/crypto/labeler3/output/ohlc_orderbook_labeled_3class_fw120m_5levels.feather")
+            # Wyznacz symbol na podstawie aktywnych par (pierwsza aktywna para)
+            symbol = None
+            if self.pair_manager:
+                active_pairs = self.pair_manager.get_active_pairs()
+                if active_pairs:
+                    symbol = self._pair_to_symbol(active_pairs[0])
+
+            if not symbol:
+                symbol = 'BTCUSDT'
+
+            # Najpierw załaduj metadata z wybranego modelu i ustaw listę cech w generatorze
+            try:
+                if self.pair_manager:
+                    model_index = self.pair_manager.get_model_index_for_pair(active_pairs[0]) if active_pairs else 3
+                    _, _, metadata = ModelLoader().load_model_for_pair(active_pairs[0], model_index)
+                    if metadata and 'feature_names' in metadata:
+                        self.signal_generator.set_feature_names(metadata['feature_names'])
+            except Exception:
+                pass
+
+            # Ścieżka do pliku z etykietami i cechami z labeler5/training5
+            features_path = Path(f"C:/Users/macie/OneDrive/Python/Binance/crypto/labeler5/output/labeled_{symbol}.feather")
             
             if not features_path.exists():
                 logger.error(f"❌ Plik z cechami nie istnieje: {features_path}")
@@ -208,46 +244,27 @@ class Enhanced_ML_MA43200_Buffer_Strategy(IStrategy):
             if 'timestamp' in self.features_data.columns:
                 self.features_data['date'] = pd.to_datetime(self.features_data['timestamp'], utc=True)
                 self.features_data.set_index('date', inplace=True)
-            elif 'date' in self.features_data.columns:
-                self.features_data['date'] = pd.to_datetime(self.features_data['date'], utc=True)
-                self.features_data.set_index('date', inplace=True)
             else:
-                logger.error("❌ Brak kolumny timestamp lub date w pliku z cechami")
+                logger.error("❌ Brak kolumny timestamp w pliku z cechami")
                 return
             
+            # Lista cech jest już ustawiona z metadata powyżej
+
             # Sprawdź czy wszystkie wymagane cechy są dostępne
             required_features = self.signal_generator.feature_columns
             missing_features = [f for f in required_features if f not in self.features_data.columns]
             
+            logger.info(f"🔍 DEBUGGING: Wymagane cechy: {len(required_features)}, Dostępne cechy: {len(self.features_data.columns)}")
+            
             if missing_features:
-                logger.error(f"❌ Brakujące cechy: {missing_features}")
+                logger.error(f"❌ Brakujące cechy ({len(missing_features)}): {missing_features[:10]}...")
                 return
                 
             self.features_loaded = True
-            logger.info(f"✅ Dane z cechami załadowane z pliku labeler3: {len(self.features_data)} wierszy, {len(required_features)} cech")
+            logger.info(f"✅ Dane z cechami załadowane z pliku labeler5: {len(self.features_data)} wierszy, {len(required_features)} cech")
             
         except Exception as e:
             logger.error(f"❌ Błąd podczas ładowania danych z cechami: {e}")
-
-    def populate_indicators(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
-        """
-        Główna metoda FreqTrade - wywoływana dla każdej świecy.
-        """
-        pair = metadata['pair']
-        
-        if not self.enabled:
-            logger.warning(f"❌ {pair}: ML Strategy jest wyłączona.")
-            return dataframe
-            
-        if not self.features_loaded:
-            logger.error(f"❌ {pair}: Dane z cechami nie zostały załadowane.")
-            return dataframe
-        
-        # Wybierz tryb działania na podstawie runmode
-        if self.dp.runmode == RunMode.BACKTEST:
-            return self._populate_for_backtest(dataframe, pair)
-        else:
-            return self._populate_for_live(dataframe, pair)
 
     def _populate_for_backtest(self, dataframe: pd.DataFrame, pair: str) -> pd.DataFrame:
         """
@@ -262,68 +279,16 @@ class Enhanced_ML_MA43200_Buffer_Strategy(IStrategy):
         timestamps = dataframe['date'].tolist()
         logger.info(f"🚀 {pair}: Rozpoczynanie przetwarzania dla {len(timestamps)} świec...")
         
-        # SPRAWDZENIE DANYCH OHLC - porównanie z danymi z pliku z cechami
-        logger.info(f"🔍 {pair}: Sprawdzanie zgodności danych OHLC...")
-        mismatches = 0
-        total_checked = 0
-        
-        for i, timestamp in enumerate(timestamps[:100]):  # Sprawdź pierwsze 100 świec
-            if timestamp in self.features_data.index:
-                # Pobierz dane OHLC z FreqTrade
-                ft_open = dataframe.iloc[i]['open']
-                ft_high = dataframe.iloc[i]['high']
-                ft_low = dataframe.iloc[i]['low']
-                ft_close = dataframe.iloc[i]['close']
-                ft_volume = dataframe.iloc[i]['volume']
-                
-                # Pobierz dane OHLC z pliku z cechami
-                feat_open = self.features_data.loc[timestamp, 'open']
-                feat_high = self.features_data.loc[timestamp, 'high']
-                feat_low = self.features_data.loc[timestamp, 'low']
-                feat_close = self.features_data.loc[timestamp, 'close']
-                feat_volume = self.features_data.loc[timestamp, 'volume']
-                
-                # Sprawdź czy są identyczne
-                if (abs(ft_open - feat_open) > 0.01 or 
-                    abs(ft_high - feat_high) > 0.01 or 
-                    abs(ft_low - feat_low) > 0.01 or 
-                    abs(ft_close - feat_close) > 0.01 or 
-                    abs(ft_volume - feat_volume) > 0.01):
-                    mismatches += 1
-                    if mismatches <= 5:  # Pokaż tylko pierwsze 5 różnic
-                        logger.warning(f"⚠️ {pair}: Różnica OHLC dla {timestamp}:")
-                        logger.warning(f"   FreqTrade: O={ft_open:.2f}, H={ft_high:.2f}, L={ft_low:.2f}, C={ft_close:.2f}, V={ft_volume:.2f}")
-                        logger.warning(f"   Features:  O={feat_open:.2f}, H={feat_high:.2f}, L={feat_low:.2f}, C={feat_close:.2f}, V={feat_volume:.2f}")
-                
-                total_checked += 1
-        
-        logger.info(f"🔍 {pair}: Sprawdzono {total_checked} świec, znaleziono {mismatches} różnic w danych OHLC")
-        
-        # SPRAWDZENIE TIMESTAMPÓW - ile z FreqTrade nie ma w danych z cechami
-        logger.info(f"🔍 {pair}: Sprawdzanie dostępności timestampów...")
-        missing_timestamps = 0
-        available_timestamps = 0
-        
-        for timestamp in timestamps:
-            if timestamp in self.features_data.index:
-                available_timestamps += 1
-            else:
-                missing_timestamps += 1
-                if missing_timestamps <= 5:  # Pokaż tylko pierwsze 5 brakujących
-                    logger.warning(f"⚠️ {pair}: Timestamp {timestamp} nie znaleziony w danych z cechami")
-        
-        logger.info(f"🔍 {pair}: Dostępne timestampy: {available_timestamps}, brakujące: {missing_timestamps}")
-        logger.info(f"🔍 {pair}: Zakres timestampów FreqTrade: {timestamps[0]} - {timestamps[-1]}")
-        logger.info(f"🔍 {pair}: Zakres timestampów Features: {self.features_data.index.min()} - {self.features_data.index.max()}")
-        
-        # Pobierz model i scaler
-        model = self.models_cache.get(self._normalize_pair_name(pair))
-        scaler = self.scalers_cache.get(self._normalize_pair_name(pair))
-        
+        # Załaduj model i scaler bez cache (diagnostyka) oraz ustaw cechy z metadata
+        model_index = self.pair_manager.get_model_index_for_pair(pair) if self.pair_manager else 3
+        model, scaler, metadata = self.model_loader.load_model_for_pair(pair, model_index)
+        logger.info(f"🔍 {pair}: DEBUGGING - model={model is not None}, scaler={scaler is not None}")
+        if metadata and 'feature_names' in metadata:
+            self.signal_generator.set_feature_names(metadata['feature_names'])
         if not model or not scaler:
             logger.error(f"❌ {pair}: Brak modelu lub scalera.")
             return dataframe
-        
+    
         # Przygotuj cechy dla wszystkich timestampów
         features_list = []
         valid_indices = []
@@ -350,6 +315,8 @@ class Enhanced_ML_MA43200_Buffer_Strategy(IStrategy):
             logger.error(f"❌ {pair}: Brak prawidłowych cech do predykcji.")
             return dataframe
         
+        logger.info(f"✅ {pair}: Znaleziono {len(features_list)} prawidłowych próbek z {len(timestamps)} świec")
+    
         # Utwórz DataFrame z cechami
         features_df = pd.DataFrame(features_list, columns=self.signal_generator.feature_columns)
         logger.info(f"🤖 {pair}: Przygotowywanie batch prediction dla {len(features_list)} próbek...")
@@ -374,7 +341,7 @@ class Enhanced_ML_MA43200_Buffer_Strategy(IStrategy):
                     dataframe.at[original_idx, 'enter_short'] = 1
                 # neutral nie generuje sygnałów wejścia
                 
-                # Zapisz dane do logu, jeśli istnieją
+                # Zapisz WSZYSTKIE predykcje do logu (LONG, SHORT, NEUTRAL)
                 if signal_data and 'probabilities' in signal_data:
                     self.predictions_log.append({
                         'timestamp': timestamp,
@@ -386,14 +353,17 @@ class Enhanced_ML_MA43200_Buffer_Strategy(IStrategy):
                         'prob_NEUTRAL': signal_data['probabilities'][2]
                     })
 
-        logger.info(f"✅ {pair}: Zakończono backtesting.")
+        # Sprawdź ile sygnałów jest w dataframe
+        long_signals = (dataframe['enter_long'] == 1).sum()
+        short_signals = (dataframe['enter_short'] == 1).sum()
+        logger.info(f"✅ {pair}: Zakończono backtesting - {long_signals} LONG, {short_signals} SHORT sygnałów")
         
         # Zapisz log predykcji
         if self.predictions_log:
             self._save_predictions_log(pair)
         
         return dataframe
-
+    
     def _populate_for_live(self, dataframe: pd.DataFrame, pair: str) -> pd.DataFrame:
         """
         Logika dla trybu LIVE - przetwarzanie tylko ostatniej świecy.
@@ -409,73 +379,41 @@ class Enhanced_ML_MA43200_Buffer_Strategy(IStrategy):
             features = features.astype(np.float64)
             
             if np.isfinite(features).all():
-                model = self.models_cache.get(self._normalize_pair_name(pair))
-                scaler = self.scalers_cache.get(self._normalize_pair_name(pair))
-                
+                # Załaduj model i scaler bez cache
+                model_index = self.pair_manager.get_model_index_for_pair(pair) if self.pair_manager else 3
+                model, scaler, metadata = self.model_loader.load_model_for_pair(pair, model_index)
+                if metadata and 'feature_names' in metadata:
+                    self.signal_generator.set_feature_names(metadata['feature_names'])
                 if model and scaler:
-                    # Utwórz dataframe z cechami dla ostatniego wiersza
                     features_df = pd.DataFrame([features], columns=self.signal_generator.feature_columns)
-                    
                     signal_data = self.signal_generator.generate_signal(model, scaler, features_df)
-                    self._assign_signals_to_row(
-                        dataframe,
-                        dataframe.index[-1],
-                        signal_data
-                    )
+                    self._assign_signals_to_row(dataframe, dataframe.index[-1], signal_data)
         
-        return dataframe
-     
-    def populate_entry_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
-        # Sygnały 'enter_long' i 'enter_short' są już obliczone w `populate_indicators`.
-        # Ta metoda służy teraz tylko do ewentualnego dodania tagów lub innej logiki
-        # bazującej na istniejących sygnałach.
-        pair = metadata['pair']
-        
-        # Inicjalizuj kolumny jeśli nie istnieją
-        self._initialize_signal_columns(dataframe)
-        
-        long_condition = dataframe['enter_long'] == 1
-        short_condition = dataframe['enter_short'] == 1
-        
-        dataframe.loc[long_condition, 'enter_tag'] = f'{pair}_long'
-        dataframe.loc[short_condition, 'enter_tag'] = f'{pair}_short'
-        
-        return dataframe
-     
-    def populate_exit_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
-        """
-        Wyłącza niestandardowe sygnały wyjścia. Strategia opiera się wyłącznie na
-        wbudowanych mechanizmach ROI i stop-loss dla maksymalnej wydajności.
-        """
-        dataframe['exit_long'] = 0
-        dataframe['exit_short'] = 0
         return dataframe
 
     def _normalize_pair_name(self, pair: str) -> str:
-        return pair.split(':')[0]
+        """Konwertuje nazwę pary na format używany w cache/spójny z symbolami modeli."""
+        return self._pair_to_symbol(pair)
 
     def _initialize_signal_columns(self, dataframe: pd.DataFrame):
-        """Inicjalizuje kolumny sygnałowe, jeśli nie istnieją."""
+        """Inicjalizuje kolumny sygnałowe."""
         if 'enter_long' not in dataframe.columns:
             dataframe['enter_long'] = 0
         if 'enter_short' not in dataframe.columns:
             dataframe['enter_short'] = 0
-        if 'exit_long' not in dataframe.columns:
-            dataframe['exit_long'] = 0
-        if 'exit_short' not in dataframe.columns:
-            dataframe['exit_short'] = 0
         if 'enter_tag' not in dataframe.columns:
             dataframe['enter_tag'] = ''
-            
-    def _assign_signals_to_row(self, df: pd.DataFrame, index, signal_data: dict):
-        """Helper do przypisywania sygnałów do wiersza ramki danych."""
-        signal = signal_data.get('signal')
 
-        if signal == 'LONG':
-            df.loc[index, 'enter_long'] = 1
-        elif signal == 'SHORT':
-            df.loc[index, 'enter_short'] = 1
-        
+    def _assign_signals_to_row(self, df: pd.DataFrame, index, signal_data: dict):
+        """Przypisuje sygnały do konkretnego wiersza."""
+        signal = signal_data.get('signal')
+        if signal == 'long':
+            df.at[index, 'enter_long'] = 1
+            df.at[index, 'enter_tag'] = 'long'
+        elif signal == 'short':
+            df.at[index, 'enter_short'] = 1
+            df.at[index, 'enter_tag'] = 'short'
+
     def _save_predictions_log(self, pair: str):
         """Zapisuje log predykcji do pliku CSV."""
         if not self.predictions_log:
@@ -500,6 +438,204 @@ class Enhanced_ML_MA43200_Buffer_Strategy(IStrategy):
         except Exception as e:
             logger.error(f"❌ Błąd podczas zapisywania logu predykcji: {e}")
 
-    def bot_loop_start(self, current_time, **kwargs) -> None:
-        """Wywoływane na początku każdej pętli bota."""
+    
+    def populate_entry_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
+        # Sygnały 'enter_long' i 'enter_short' są już obliczone w `populate_indicators`.
+        # Ta metoda służy teraz tylko do ewentualnego dodania tagów lub innej logiki
+        # bazującej na istniejących sygnałach.
+        pair = metadata['pair']
+        
+        # Inicjalizuj kolumny jeśli nie istnieją
+        self._initialize_signal_columns(dataframe)
+        
+        long_condition = dataframe['enter_long'] == 1
+        short_condition = dataframe['enter_short'] == 1
+        
+        # DEBUG: Sprawdź ile sygnałów jest przed nadpisaniem tagów
+        long_count = long_condition.sum()
+        short_count = short_condition.sum()
+        logger.info(f"🔍 DEBUG populate_entry_trend: {long_count} LONG, {short_count} SHORT sygnałów")
+        
+        dataframe.loc[long_condition, 'enter_tag'] = f'{pair}_long'
+        dataframe.loc[short_condition, 'enter_tag'] = f'{pair}_short'
+        
+        # DEBUG: Sprawdź przykłady tagów po nadpisaniu
+        if short_count > 0:
+            short_examples = dataframe[dataframe['enter_short'] == 1].head(2)
+            for idx in short_examples.index:
+                timestamp = dataframe.loc[idx, 'date'] if 'date' in dataframe.columns else idx
+                logger.info(f"   SHORT po nadpisaniu: {timestamp}, enter_tag='{dataframe.loc[idx, 'enter_tag']}'")
+
+        # DEBUG: OSTATECZNE SPRAWDZENIE SYGNAŁÓW PRZED PRZEKAZANIEM DO FREQTRADE
+        final_long_signals = (dataframe['enter_long'] == 1).sum()
+        final_short_signals = (dataframe['enter_short'] == 1).sum()
+        
+
+        
+        logger.info(f"🚨 FINAL CHECK: Przekazuję do FreqTrade {final_long_signals} LONG i {final_short_signals} SHORT sygnałów.")
+        
+        # DEBUG: Sprawdź wartość can_short w strategii
+
+        
+
+        
+        return dataframe
+    
+    def populate_exit_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
+        """
+        Generuje sygnały wyjścia - wyłącza niestandardowe sygnały wyjścia.
+        Strategia opiera się wyłącznie na wbudowanych mechanizmach ROI i stop-loss.
+        """
+        # Wyłącz niestandardowe sygnały wyjścia
+        dataframe['exit_long'] = 0
+        dataframe['exit_short'] = 0
+        
+        return dataframe
+    
+    def confirm_trade_entry(self, pair: str, order_type: str, amount: float, rate: float, 
+                           time_in_force: str, current_time: datetime, entry_tag: Optional[str], 
+                           side: str, **kwargs) -> bool:
+        """Nie blokuj wejść na etapie confirm_trade_entry (diagnostyka)."""
+        if not self.ml_enabled:
+            return False
+        return True
+    
+    def custom_stoploss(self, pair: str, trade: Trade, current_time: datetime, 
+                       current_rate: float, current_profit: float, **kwargs) -> float:
+        """
+        Custom stoploss logic
+        """
+        # Domyślny stoploss z konfiguracji
+        return self.stoploss
+    
+    def custom_entry_price(self, pair: str, current_time: datetime, proposed_rate: float, 
+                          entry_tag: Optional[str], side: str, **kwargs) -> float:
+        """Ustal cenę wejścia = close poprzedniej świecy względem bieżącego czasu.
+        Jeśli nie uda się pobrać, fallback do proposed_rate.
+        """
+        try:
+            hist = self._close_hist.get(pair)
+            if hist is None or hist.empty:
+                return proposed_rate
+            # poprzednia świeca: ostatni close z czasu < current_time
+            prev = hist.loc[hist.index < pd.Timestamp(current_time, tz='UTC'), 'close']
+            if not prev.empty:
+                return float(prev.iloc[-1])
+            return proposed_rate
+        except Exception:
+            return proposed_rate
+    
+    def custom_exit(self, pair: str, trade: Trade, current_time: datetime, current_rate: float,
+                   current_profit: float, **kwargs) -> Optional[str]:
+        """
+        Custom exit logic
+        """
+        return None
+    
+    def custom_stake_amount(self, pair: str, current_time: datetime, current_rate: float,
+                           proposed_stake: float, min_stake: Optional[float], max_stake: Optional[float],
+                           leverage: float, entry_tag: Optional[str], side: str,
+                           **kwargs) -> float:
+        """
+        Custom stake amount based on risk_multiplier from pair configuration
+        """
+        try:
+            if self.pair_manager and self.pair_manager.is_pair_enabled(pair):
+                risk_multiplier = self.pair_manager.get_risk_multiplier(pair)
+                adjusted_stake = proposed_stake * risk_multiplier
+                
+                # Apply min/max constraints
+                if min_stake is not None:
+                    adjusted_stake = max(adjusted_stake, min_stake)
+                if max_stake is not None:
+                    adjusted_stake = min(adjusted_stake, max_stake)
+                
+                logger.debug(f"💰 {pair}: Stake adjusted by risk_multiplier {risk_multiplier}: {proposed_stake} -> {adjusted_stake}")
+                return adjusted_stake
+            
+            return proposed_stake
+            
+        except Exception as e:
+            logger.error(f"❌ {pair}: Error calculating custom stake: {e}")
+            return proposed_stake
+
+    def bot_start(self, **kwargs) -> None:
+        """
+        Wywoływane na starcie bota
+        """
+        try:
+            logger.info("🚀 Bot start - inicjalizacja strategii...")
+            
+            # Załaduj dane z cechami (ustawi listę cech z metadata wybranego modelu)
+            self._load_features_data()
+            
+            logger.info("✅ Bot start - inicjalizacja zakończona")
+            
+        except Exception as e:
+            logger.error(f"❌ Error in bot_start: {e}")
+
+    def _load_models_for_active_pairs(self) -> None:
+        """Ładuje modele dla aktywnych par"""
+        try:
+            active_pairs = self.pair_manager.get_active_pairs()
+            
+            for pair in active_pairs:
+                try:
+                    # Pobierz ustawienia pary
+                    model_index = self.pair_manager.get_model_index_for_pair(pair)
+                    use_basic_features = self.pair_manager.get_feature_mode_for_pair(pair)
+                    
+                    # Załaduj model
+                    model, scaler, metadata = self.model_loader.load_model_for_pair(
+                        pair, model_index, use_basic_features
+                    )
+                    
+                    if model and scaler and metadata:
+                        # Zapisz w cache
+                        normalized_pair = self._normalize_pair_name(pair)
+                        self.models_cache[normalized_pair] = model
+                        self.scalers_cache[normalized_pair] = scaler
+                        
+                        # Zapisz w ml_models_loaded dla kompatybilności
+                        self.ml_models_loaded[pair] = {
+                            'model': model,
+                            'scaler': scaler,
+                            'metadata': metadata,
+                            'model_index': model_index,
+                            'use_basic_features': use_basic_features
+                        }
+                        
+                        logger.info(f"✅ {pair}: Model {model_index} loaded successfully")
+                    else:
+                        logger.error(f"❌ {pair}: Failed to load model")
+                
+                except Exception as e:
+                    logger.error(f"❌ {pair}: Error loading model: {e}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error loading models for active pairs: {e}")
+
+    def bot_loop_start(self, **kwargs) -> None:
+        """
+        Wywoływane na początku każdej pętli bota
+        """
         pass
+    
+
+    
+    def get_strategy_stats(self) -> Dict:
+        """
+        Zwraca statystyki strategii
+        """
+        stats = {
+            'strategy_version': '7.0',
+            'ml_enabled': self.ml_enabled,
+            'ml_models_loaded': len(self.ml_models_loaded),
+            'ml_errors': len(self.ml_errors),
+            'active_pairs': len(self.pair_manager.get_active_pairs()) if self.pair_manager else 0
+        }
+        
+        if self.pair_manager:
+            stats['pair_config'] = self.pair_manager.get_config_summary()
+        
+        return stats

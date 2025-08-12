@@ -60,6 +60,9 @@ class FastOHLCDownloader:
         self.logger.info(f"Sprawdzam dostępny zakres dat dla {symbol}")
         
         try:
+            # Ustaw stały zakres od 1 stycznia 2022
+            start_date = datetime(2022, 1, 1)
+            
             # Pobierz najnowsze dane (ostatnie 1000 świec)
             latest_ohlcv = self.exchange.fetch_ohlcv(
                 symbol, 
@@ -74,32 +77,8 @@ class FastOHLCDownloader:
             latest_timestamp = latest_ohlcv[-1][0]
             latest_date = datetime.fromtimestamp(latest_timestamp / 1000)
             
-            # Najstarszy timestamp (z ostatnich 1000 świec)
-            oldest_timestamp = latest_ohlcv[0][0]
-            oldest_date = datetime.fromtimestamp(oldest_timestamp / 1000)
-            
-            # Sprawdź czy są starsze dane (spróbuj pobrać dane sprzed 2 lat)
-            two_years_ago = datetime.now() - timedelta(days=730)
-            two_years_ago_timestamp = int(two_years_ago.timestamp() * 1000)
-            
-            try:
-                historical_ohlcv = self.exchange.fetch_ohlcv(
-                    symbol,
-                    DOWNLOAD_CONFIG['interval'],
-                    since=two_years_ago_timestamp,
-                    limit=1000
-                )
-                
-                if historical_ohlcv:
-                    actual_oldest_timestamp = historical_ohlcv[0][0]
-                    actual_oldest_date = datetime.fromtimestamp(actual_oldest_timestamp / 1000)
-                    oldest_date = actual_oldest_date
-                    
-            except Exception as e:
-                self.logger.warning(f"Nie udało się pobrać starszych danych dla {symbol}: {e}")
-            
-            self.logger.info(f"{symbol}: {oldest_date.strftime('%Y-%m-%d')} - {latest_date.strftime('%Y-%m-%d')}")
-            return oldest_date, latest_date
+            self.logger.info(f"{symbol}: {start_date.strftime('%Y-%m-%d')} - {latest_date.strftime('%Y-%m-%d')}")
+            return start_date, latest_date
             
         except Exception as e:
             self.logger.error(f"❌ Błąd sprawdzania zakresu dat dla {symbol}: {e}")

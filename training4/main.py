@@ -73,6 +73,7 @@ class Trainer:
             logger.info(f"  - Plik: {input_path}")
         else:
             logger.info(f"  - Katalog: {cfg.INPUT_DIR}")
+        logger.info(f"  - Tryb cech: {'PODSTAWOWE (37 cech z training3)' if cfg.USE_BASIC_FEATURES_ONLY else 'ROZSZERZONE (71 cech)'}")
         logger.info(f"  - Oczekiwane cechy: {len(cfg.FEATURES)} cech")
         logger.info(f"  - Poziomy TP/SL: {len(cfg.LABEL_COLUMNS)}")
         logger.info(f"  - Katalog modeli: {self.model_dir}")
@@ -179,6 +180,7 @@ class Trainer:
                     y_true_high_conf, 
                     y_pred_high_conf,
                     target_names=['LONG', 'SHORT', 'NEUTRAL'],
+                    labels=[0, 1, 2],  # Wymusza wszystkie 3 klasy
                     output_dict=True,
                     zero_division=0
                 )
@@ -204,6 +206,7 @@ class Trainer:
                 y_test[label_col], 
                 y_test_pred[label_col],
                 target_names=['LONG', 'SHORT', 'NEUTRAL'],
+                labels=[0, 1, 2],  # Wymusza wszystkie 3 klasy
                 output_dict=True,
                 zero_division=0
             )
@@ -242,6 +245,7 @@ class Trainer:
                     y_true_high_conf, 
                     y_pred_high_conf,
                     target_names=['LONG', 'SHORT', 'NEUTRAL'],
+                    labels=[0, 1, 2],  # Wymusza wszystkie 3 klasy
                     output_dict=True,
                     zero_division=0
                 )
@@ -519,7 +523,11 @@ class Trainer:
             'enable_class_weights_in_training': hasattr(cfg, 'ENABLE_CLASS_WEIGHTS_IN_TRAINING') and cfg.ENABLE_CLASS_WEIGHTS_IN_TRAINING,
             'enable_weighted_loss': cfg.ENABLE_WEIGHTED_LOSS,
             'gamma': cfg.XGB_GAMMA,
-            'random_state': cfg.XGB_RANDOM_STATE
+            'random_state': cfg.XGB_RANDOM_STATE,
+            # Parametry regularyzacji
+            'reg_alpha': cfg.XGB_REG_ALPHA,
+            'reg_lambda': cfg.XGB_REG_LAMBDA,
+            'min_child_weight': cfg.XGB_MIN_CHILD_WEIGHT
         }
         
         # Przygotuj informacje o danych
@@ -582,24 +590,45 @@ class Trainer:
         # Możesz dodać logowanie do konsoli jeśli chcesz
 
     def _plot_feature_importance(self, feature_importance):
-        """Generuje wykres ważności cech."""
+        """Generuje wykres ważności cech i zapisuje dane w CSV."""
         symbol_info = f"({self.symbol})" if self.symbol else ""
-        plt.figure(figsize=(12, 8))
         
-        # Top 20 cech
-        top_features = feature_importance.head(20)
+        # Generuj timestamp dla nazwy pliku
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        plt.barh(range(len(top_features)), top_features['importance'])
-        plt.yticks(range(len(top_features)), top_features['feature'])
-        plt.xlabel('Importance')
-        plt.title(f'Top 20 Feature Importance - Multi-Output XGBoost {symbol_info}')
-        plt.gca().invert_yaxis()
+        # Zapisuj dane w CSV z timestamp
+        csv_filename = f'feature_importance_{timestamp}.csv'
+        csv_path = self.report_dir / csv_filename
+        feature_importance.to_csv(csv_path, index=False)
+        logger.info(f"Dane ważności cech {symbol_info} zapisane w CSV: {csv_path}")
         
-        plt.tight_layout()
-        plot_path = self.report_dir / 'feature_importance.png'
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-        plt.close()
-        logger.info(f"Wykres ważności cech {symbol_info} zapisany: {plot_path}")
+        # Loguj top 10 cech
+        top_10 = feature_importance.head(10)
+        logger.info(f"Top 10 najważniejszych cech {symbol_info}:")
+        for idx, row in top_10.iterrows():
+            logger.info(f"  {row['feature']}: {row['importance']:.6f}")
+        
+        # Generuj wykres tylko jeśli są dane
+        if len(feature_importance) > 0 and feature_importance['importance'].sum() > 0:
+            plt.figure(figsize=(12, 8))
+            
+            # Top 20 cech
+            top_features = feature_importance.head(20)
+            
+            plt.barh(range(len(top_features)), top_features['importance'])
+            plt.yticks(range(len(top_features)), top_features['feature'])
+            plt.xlabel('Importance')
+            plt.title(f'Top 20 Feature Importance - Multi-Output XGBoost {symbol_info}')
+            plt.gca().invert_yaxis()
+            
+            plt.tight_layout()
+            plot_path = self.report_dir / 'feature_importance.png'
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            logger.info(f"Wykres ważności cech {symbol_info} zapisany: {plot_path}")
+        else:
+            logger.warning(f"Brak danych ważności cech do wygenerowania wykresu {symbol_info}")
 
     def _plot_confusion_matrices(self):
         """Generuje wykresy confusion matrix dla wszystkich poziomów."""
