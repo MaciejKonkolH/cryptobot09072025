@@ -9,6 +9,8 @@ import time
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from training3 import config as cfg
 from tqdm import tqdm
+from datetime import datetime
+from pathlib import Path
 
 
 logger = logging.getLogger(__name__)
@@ -77,6 +79,7 @@ class MultiOutputXGBoost:
         xgb_params = self.build_model()
         start_time = time.time()
         
+        self.level_logloss = []
         for i, label_col in enumerate(cfg.LABEL_COLUMNS):
             level_desc = cfg.TP_SL_LEVELS_DESC[i]
             logger.info(f"=== TRENING POZIOMU {i+1}/5 ({level_desc}) ===")
@@ -115,7 +118,7 @@ class MultiOutputXGBoost:
                 num_boost_round=cfg.XGB_N_ESTIMATORS,
                 evals=[(dval, 'validation')],
                 early_stopping_rounds=cfg.XGB_EARLY_STOPPING_ROUNDS,
-                verbose_eval=True
+                verbose_eval=50
             )
             
             # Loguj informacje o treningu
@@ -133,6 +136,27 @@ class MultiOutputXGBoost:
         
         total_time = time.time() - start_time
         logger.info(f"Całkowity czas treningu: {total_time:.1f}s ({total_time/60:.1f} min)")
+
+        # Zapisz podsumowanie logloss per poziom do raportu (latest + timestamp)
+        try:
+            rows = []
+            for i, model in enumerate(self.models):
+                level_desc = cfg.TP_SL_LEVELS_DESC[i]
+                best_it = getattr(model, 'best_iteration', None)
+                best_sc = getattr(model, 'best_score', None)
+                rows.append((i+1, level_desc, best_it, best_sc))
+            import csv
+            cfg.REPORT_DIR.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+            for fname in [f'logloss_summary_{ts}.csv', 'logloss_summary_latest.csv']:
+                outp = Path(cfg.REPORT_DIR) / fname
+                with open(outp, 'w', newline='', encoding='utf-8') as f:
+                    w = csv.writer(f)
+                    w.writerow(['level_index', 'level_desc', 'best_iteration', 'best_logloss'])
+                    w.writerows(rows)
+            logger.info("Zapisano podsumowanie logloss: logloss_summary_latest.csv")
+        except Exception as e:
+            logger.warning(f"Nie udało się zapisać podsumowania logloss: {e}")
         
         # Predykcje walidacyjne
         y_val_pred = self.predict(X_val)

@@ -336,79 +336,61 @@ def _get_tp_sl_values(level_desc):
     return None, None
 
 
-def _calculate_profit_from_confusion_matrix(confusion_matrix, tp, sl, signal_type):
-    """Oblicza dochód netto na podstawie confusion matrix z procentem składanym.
-    
-    Confusion matrix format:
-    Predicted
-    Actual    LONG  SHORT  NEUTRAL
-    LONG      [0][0] [0][1] [0][2]
-    SHORT     [1][0] [1][1] [1][2]
-    NEUTRAL   [2][0] [2][1] [2][2]
+def _profit_threshold(tp: float, sl: float) -> float:
+    """Próg opłacalności w ujęciu precision [%] zgodny z training5.
+
+    threshold = SL / (TP + SL) * 100
     """
-    if tp <= 0 or sl <= 0 or len(confusion_matrix) < 3:
+    return sl / (sl + tp) * 100.0 if (sl + tp) > 0 else 0.0
+
+
+def _weighted_trade_accuracy(cm, class_report) -> float:
+    """Ważona precyzja dla LONG/SHORT jak w training5/report.py.
+
+    Wagi = liczba przewidzianych sygnałów po stronie LONG vs SHORT.
+    """
+    long_transactions = sum(cm[0])
+    short_transactions = sum(cm[1])
+    total_trading = long_transactions + short_transactions
+    if total_trading == 0:
         return 0.0
-    
+    p_long = class_report.get('LONG', {}).get('precision', 0.0)
+    p_short = class_report.get('SHORT', {}).get('precision', 0.0)
+    return (long_transactions * p_long + short_transactions * p_short) / total_trading
+
+
+def _calc_profit_from_cm(cm, tp: float, sl: float, signal_type: str) -> float:
+    """Oczekiwany zysk netto per transakcję [%] jak w training5.
+
+    profit = p_win * TP - (1 - p_win) * SL
+    (TP/SL w punktach procentowych, np. 0.8)
+    """
+    if tp <= 0 or sl <= 0:
+        return 0.0
     if signal_type == 'LONG':
-        # Dla LONG: kolumna 0 (przewidziane jako LONG)
-        # confusion_matrix[0][0] = rzeczywiste LONG przewidziane jako LONG (zyskowne)
-        # confusion_matrix[1][0] + confusion_matrix[2][0] = rzeczywiste SHORT/NEUTRAL przewidziane jako LONG (stratne)
-        profitable = confusion_matrix[0][0]  # Prawidłowe LONG
-        losing = confusion_matrix[1][0] + confusion_matrix[2][0]  # Błędne LONG
-        
+        profitable = cm[0][0]
+        total = cm[0][0] + cm[1][0] + cm[2][0]
     elif signal_type == 'SHORT':
-        # Dla SHORT: kolumna 1 (przewidziane jako SHORT)
-        # confusion_matrix[1][1] = rzeczywiste SHORT przewidziane jako SHORT (zyskowne)
-        # confusion_matrix[0][1] + confusion_matrix[2][1] = rzeczywiste LONG/NEUTRAL przewidziane jako SHORT (stratne)
-        profitable = confusion_matrix[1][1]  # Prawidłowe SHORT
-        losing = confusion_matrix[0][1] + confusion_matrix[2][1]  # Błędne SHORT
+        profitable = cm[1][1]
+        total = cm[0][1] + cm[1][1] + cm[2][1]
     else:
         return 0.0
-    
-    total_trades = profitable + losing
-    if total_trades == 0:
+    if total == 0:
         return 0.0
-    
-    # Procent składany: Kapitał_końcowy = Kapitał_początkowy × (1 + TP/100)^profitable × (1 - SL/100)^losing
-    tp_multiplier = (1 + tp / 100) ** profitable
-    sl_multiplier = (1 - sl / 100) ** losing
-    
-    final_capital = tp_multiplier * sl_multiplier
-    
-    # Dochód netto w procentach
-    profit_percent = (final_capital - 1) * 100
-    
-    return profit_percent
+    p_win = profitable / total
+    return p_win * tp - (1.0 - p_win) * sl
 
 
-def _calculate_combined_profit_from_confusion_matrix(confusion_matrix, tp, sl):
-    """Oblicza łączny dochód netto z wszystkich transakcji LONG i SHORT razem."""
-    if tp <= 0 or sl <= 0 or len(confusion_matrix) < 3:
+def _calc_combined_profit_from_cm(cm, tp: float, sl: float) -> float:
+    """Średnia ważona zysków LONG i SHORT wg liczby sygnałów (jak w training5)."""
+    col_long = cm[0][0] + cm[1][0] + cm[2][0]
+    col_short = cm[0][1] + cm[1][1] + cm[2][1]
+    if (col_long + col_short) == 0:
         return 0.0
-    
-    # LONG transakcje (kolumna 0)
-    profitable_long = confusion_matrix[0][0]  # Prawidłowe LONG
-    losing_long = confusion_matrix[1][0] + confusion_matrix[2][0]  # Błędne LONG
-    
-    # SHORT transakcje (kolumna 1)
-    profitable_short = confusion_matrix[1][1]  # Prawidłowe SHORT
-    losing_short = confusion_matrix[0][1] + confusion_matrix[2][1]  # Błędne SHORT
-    
-    # Łączne liczby
-    total_profitable = profitable_long + profitable_short
-    total_losing = losing_long + losing_short
-    total_trades = total_profitable + total_losing
-    
-    if total_trades == 0:
-        return 0.0
-    
-    # Łączny procent składany
-    tp_multiplier = (1 + tp / 100) ** total_profitable
-    sl_multiplier = (1 - sl / 100) ** total_losing
-    
-    final_capital = tp_multiplier * sl_multiplier
-    
-    # Łączny dochód netto w procentach
-    combined_profit_percent = (final_capital - 1) * 100
-    
-    return combined_profit_percent 
+    p_long = _calc_profit_from_cm(cm, tp, sl, 'LONG')
+    p_short = _calc_profit_from_cm(cm, tp, sl, 'SHORT')
+    return (p_long * col_long + p_short * col_short) / (col_long + col_short)
+
+# Backward-compat aliases (used by existing template in this module)
+_calculate_profit_from_confusion_matrix = _calc_profit_from_cm
+_calculate_combined_profit_from_confusion_matrix = _calc_combined_profit_from_cm

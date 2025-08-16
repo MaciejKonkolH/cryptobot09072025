@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+import json
 
 
 def _get_tp_sl_for_level(cfg, level_index: int):
@@ -12,14 +13,33 @@ def _profit_threshold(tp: float, sl: float) -> float:
 
 
 def _weighted_trade_accuracy(cm, class_report) -> float:
-    long_transactions = sum(cm[0])
-    short_transactions = sum(cm[1])
-    total_trading = long_transactions + short_transactions
-    if total_trading == 0:
+    """Weighted precision over predicted LONG/SHORT trades only.
+
+    We weight by counts of predicted trades per side (column sums), and we
+    exclude any side with zero predictions from both numerator and denominator.
+    This avoids penalizing the metric when a side has no predictions (precision
+    reported as 0.0 by some reporters).
+    """
+    # Column sums = number of predictions for a given class
+    col_long = cm[0][0] + cm[1][0] + cm[2][0]
+    col_short = cm[0][1] + cm[1][1] + cm[2][1]
+
+    # Compute precision directly from CM to avoid reporter quirks
+    p_long = (cm[0][0] / col_long) if col_long > 0 else None
+    p_short = (cm[1][1] / col_short) if col_short > 0 else None
+
+    numerator = 0.0
+    denominator = 0
+    if col_long and p_long is not None:
+        numerator += col_long * p_long
+        denominator += col_long
+    if col_short and p_short is not None:
+        numerator += col_short * p_short
+        denominator += col_short
+
+    if denominator == 0:
         return 0.0
-    p_long = class_report.get('LONG', {}).get('precision', 0.0)
-    p_short = class_report.get('SHORT', {}).get('precision', 0.0)
-    return (long_transactions * p_long + short_transactions * p_short) / total_trading
+    return numerator / float(denominator)
 
 
 def _calc_profit_from_cm(cm, tp: float, sl: float, signal_type: str) -> float:
@@ -61,6 +81,15 @@ def save_markdown_report(evaluation_results: dict, model_params: dict, data_info
 
     with open(out, 'w', encoding='utf-8') as f:
         f.write(f"# WYNIKI TRENINGU - {symbol} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+
+        # Wykorzystane cechy
+        feature_names = data_info.get('feature_names') or []
+        if feature_names:
+            f.write("## 🧩 WYKORZYSTANE CECHY\n")
+            f.write(f"Liczba cech: {len(feature_names)}\n\n")
+            for name in feature_names:
+                f.write(f"- {name}\n")
+            f.write("\n")
 
         # Parametry modelu
         f.write("## 📊 PARAMETRY MODELU\n")
@@ -131,9 +160,9 @@ def save_markdown_report(evaluation_results: dict, model_params: dict, data_info
                 f.write(f"TP: {tp:.1f}%, SL: {sl:.1f}% - LONG: {long_prec*100:.1f}% (dochód netto ~{long_profit:.3f}%)\n")
                 f.write(f"TP: {tp:.1f}%, SL: {sl:.1f}% - SHORT: {short_prec*100:.1f}% (dochód netto ~{short_profit:.3f}%)\n")
                 f.write(f"TP: {tp:.1f}%, SL: {sl:.1f}% - ŁĄCZNY DOCHÓD: {combined_profit:.3f}%\n\n")
-            # Confidence thresholds blocks (30/40/50/60%)
+            # Confidence thresholds blocks (30/40/45/50%)
             conf = res.get('confidence_results', {})
-            for thr_percent in [30.0, 40.0, 50.0, 60.0]:
+            for thr_percent in [30.0, 40.0, 45.0, 50.0]:
                 thr = thr_percent / 100.0
                 f.write(f"\nProgi pewności {thr_percent:.1f}%:\n")
                 if conf.get(thr) is None:
@@ -178,6 +207,29 @@ def save_markdown_report(evaluation_results: dict, model_params: dict, data_info
                     f.write(f"TP: {tp:.1f}%, SL: {sl:.1f}% - SHORT: {short_prec_h*100:.1f}% (dochód netto ~{short_profit_h:.3f}%)\n")
                     f.write(f"TP: {tp:.1f}%, SL: {sl:.1f}% - ŁĄCZNY DOCHÓD: {combined_profit_h:.3f}%\n")
             f.write("\n" + "-" * 68 + "\n\n")
+
+    return out
+
+
+def save_json_report(evaluation_results: dict, model_params: dict, data_info: dict, cfg, symbol: str) -> Path:
+    """Save a unified JSON report mirroring the markdown content structure.
+
+    Output path: reports/{symbol}/results_{symbol}_{timestamp}.json
+    """
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    rep_dir = cfg.get_report_dir(symbol)
+    out = rep_dir / f"results_{symbol}_{ts}.json"
+
+    payload = {
+        "symbol": symbol,
+        "generated_at": datetime.now().isoformat(),
+        "model_params": model_params,
+        "data_info": data_info,
+        "evaluation_results": evaluation_results,
+    }
+
+    with open(out, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
 
     return out
 

@@ -31,6 +31,19 @@ def run(symbol: str):
     X_train, X_val, X_test, y_train, y_val, y_test, scaler, feat_names = split_scale(df)
     logger.info(f"Train/Val/Test: {len(X_train):,}/{len(X_val):,}/{len(X_test):,}")
 
+    # Log and persist the exact feature list used for training
+    try:
+        logger.info(f"Features used ({len(feat_names)}): {', '.join(feat_names)}")
+        rep_dir = cfg.get_report_dir(symbol)
+        ts_now = datetime.now().strftime('%Y%m%d_%H%M%S')
+        fpath = rep_dir / f"features_used_{symbol}_{ts_now}.txt"
+        with open(fpath, 'w', encoding='utf-8') as f:
+            for name in feat_names:
+                f.write(f"{name}\n")
+        logger.info(f"Saved features list: {fpath}")
+    except Exception as e:
+        logger.warning(f"Failed to save/log features list: {e}")
+
     model = MultiOutputXGB(feat_names)
     model.fit(X_train, y_train, X_val, y_val)
 
@@ -38,8 +51,10 @@ def run(symbol: str):
     # Basic metrics
     metrics = {}
     from sklearn.metrics import confusion_matrix
-    thresholds = [0.3, 0.4, 0.5, 0.6]
-    for level_idx, col in enumerate(cfg.LABEL_COLUMNS):
+    thresholds = [0.3, 0.4, 0.45, 0.5]
+    # Use resolved label columns (from data_loader) if available
+    label_cols = getattr(cfg, 'RESOLVED_LABEL_COLUMNS', cfg.LABEL_COLUMNS)
+    for level_idx, col in enumerate(label_cols):
         y_true_c = y_test[col]
         y_pred_c = y_pred[col]
         acc = accuracy_score(y_true_c, y_pred_c)
@@ -126,7 +141,8 @@ def run(symbol: str):
 
     # Save predictions CSV (thresholded, easy-to-read format)
     idx = cfg.CSV_PREDICTIONS_MODEL_INDEX
-    level_col = cfg.LABEL_COLUMNS[idx]
+    level_cols = getattr(cfg, 'RESOLVED_LABEL_COLUMNS', cfg.LABEL_COLUMNS)
+    level_col = level_cols[idx]
     timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     proba = model.probas_[level_col]  # shape (n,3) -> [LONG, SHORT, NEUTRAL]
     idx_ts = X_test.index
@@ -143,6 +159,7 @@ def run(symbol: str):
 
     pair_str = _to_pair_str(symbol)
     rows = []
+    trade_rows = []  # only LONG/SHORT, no NEUTRAL, with correctness
     for i in range(proba.shape[0]):
         if maxp[i] >= thr and pred_class[i] in (0, 1):
             signal = 'long' if pred_class[i] == 0 else 'short'
@@ -157,10 +174,32 @@ def run(symbol: str):
             'prob_LONG': float(proba[i, 0]),
             'prob_NEUTRAL': float(proba[i, 2]),
         })
+        # Trades-only file with correctness info
+        if signal != 'neutral':
+            true_cls = int(y_test[level_col].iloc[i])
+            is_correct = int(pred_class[i]) == true_cls
+            trade_rows.append({
+                'timestamp': str(idx_ts[i]),
+                'pair': pair_str,
+                'signal': signal,
+                'confidence': float(maxp[i]),
+                'prob_SHORT': float(proba[i, 1]),
+                'prob_LONG': float(proba[i, 0]),
+                'prob_NEUTRAL': float(proba[i, 2]),
+                'true_label': ['LONG', 'SHORT', 'NEUTRAL'][true_cls],
+                'correct': bool(is_correct),
+                'result': 'WIN' if is_correct else 'LOSS',
+            })
 
     pred_out = pd.DataFrame(rows)
     pred_csv = rep_dir / f"predictions_{symbol}_{level_col}_{timestamp_str}.csv"
     pred_out.to_csv(pred_csv, index=False)
+
+    # Save trades-only CSV (LONG/SHORT predictions, no NEUTRAL) with correctness
+    if trade_rows:
+        trades_out = pd.DataFrame(trade_rows)
+        trades_csv = rep_dir / f"predictions_trades_{symbol}_{level_col}_{timestamp_str}.csv"
+        trades_out.to_csv(trades_csv, index=False)
 
     # Feature importance CSV (aggregate gain across models)
     # Handle both index-based keys ('f0', 'f1', ...) and explicit feature-name keys
@@ -201,6 +240,7 @@ def run(symbol: str):
     }
     data_info = {
         'n_features': len(feat_names),
+        'feature_names': list(feat_names),
         'n_train': len(X_train),
         'n_val': len(X_val),
         'n_test': len(X_test),
@@ -217,7 +257,10 @@ def run(symbol: str):
             'confidence_results': m.get('confidence_results'),
             'level_index': m.get('level_index'),
         }
+    # Save unified markdown and JSON reports
     save_markdown_report(evaluation_results, model_params, data_info, cfg, symbol)
+    from training5.report import save_json_report
+    save_json_report(evaluation_results, model_params, data_info, cfg, symbol)
 
 
 def main():

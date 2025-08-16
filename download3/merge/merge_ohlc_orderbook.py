@@ -123,7 +123,34 @@ def merge_symbol(symbol: str, logger: logging.Logger) -> Optional[Path]:
     # Align common minute range
     ohlc_f, ob_f = align_ranges_minute(ohlc_min, ob_wide)
 
-    # Join on minute index; each minute -> one row with OHLC + two snapshots (+ts_1, ts_2)
+    # Build training3-compatible aliases for depth (snapshot1/2, ±levels)
+    def add_snapshot_aliases(df: pd.DataFrame) -> pd.DataFrame:
+        out = df.copy()
+        # Map depth_1_* to snapshot1_depth_*, depth_2_* to snapshot2_depth_*
+        for rank, snap in [(1, "snapshot1"), (2, "snapshot2")]:
+            for lvl in [1, 2, 3, 4, 5]:
+                pcol = f"depth_{rank}_p{lvl}"
+                mcol = f"depth_{rank}_m{lvl}"
+                if pcol in out.columns:
+                    out[f"{snap}_depth_{lvl}"] = out[pcol]
+                if mcol in out.columns:
+                    out[f"{snap}_depth_{-lvl}"] = out[mcol]
+        # Bid/ask volumes (sum of 5 near levels) and spread from best levels
+        if all(c in out.columns for c in ["snapshot1_depth_-1", "snapshot1_depth_1"]):
+            out["snapshot1_bid_volume"] = sum(out.get(f"snapshot1_depth_{-i}", 0) for i in range(1, 6))
+            out["snapshot1_ask_volume"] = sum(out.get(f"snapshot1_depth_{i}", 0) for i in range(1, 6))
+            out["snapshot1_spread"] = out["snapshot1_depth_1"] - out["snapshot1_depth_-1"]
+            out["spread"] = out["snapshot1_spread"]
+        # Optional snapshot2 aggregates
+        if all(c in out.columns for c in ["snapshot2_depth_-1", "snapshot2_depth_1"]):
+            out["snapshot2_bid_volume"] = sum(out.get(f"snapshot2_depth_{-i}", 0) for i in range(1, 6))
+            out["snapshot2_ask_volume"] = sum(out.get(f"snapshot2_depth_{i}", 0) for i in range(1, 6))
+            out["snapshot2_spread"] = out["snapshot2_depth_1"] - out["snapshot2_depth_-1"]
+        return out
+
+    ob_f = add_snapshot_aliases(ob_f)
+
+    # Join on minute index; each minute -> one row with OHLC + two snapshots (+ts_1, ts_2) and aliases
     merged = ohlc_f.join(ob_f, how="inner").reset_index().rename(columns={"minute": "timestamp"})
 
     out_fp = PATHS["merged_data"] / f"merged_{symbol}.parquet"

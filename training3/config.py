@@ -94,6 +94,11 @@ TP_SL_LEVELS_DESC = [
     for level in TP_SL_LEVELS
 ]
 
+def get_report_dir(symbol: str):
+    d = REPORT_DIR / symbol
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
 # --- Lista Cech do Treningu ---
 # Wszystkie cechy z feature_calculator_ohlc_snapshot: 18 względnych + 19 zaawansowanych = 37 cech
 # Nowe podejście oparte na trendach, względnych wartościach i zaawansowanych wskaźnikach
@@ -232,4 +237,10 @@ SAVE_PLOTS = True
 # Wszystkie klasy mają równe znaczenie
 PRIMARY_METRICS = ['precision', 'recall', 'f1-score']
 FOCUS_CLASSES = [0, 1, 2]  # LONG, SHORT, NEUTRAL
+
+# Sterowanie logowaniem ewaluacji do konsoli (INFO). Domyślnie wyłączone –
+# pełna ewaluacja trafia do raportu markdown.
+EVAL_LOG_TO_CONSOLE = False
+# Wyłączanie logów metryk walidacyjnych (po treningu); raporty pozostają zapisywane do plików
+VALIDATION_LOG_TO_CONSOLE = False
 

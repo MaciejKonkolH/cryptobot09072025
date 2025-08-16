@@ -35,7 +35,9 @@ class MultiOutputXGB:
         params = self._params()
         dval_cache = xgb.DMatrix(X_val, label=None, feature_names=self.feature_names)
 
-        for i, col in enumerate(cfg.LABEL_COLUMNS, 1):
+        # Use resolved label columns if provided by data_loader (to handle naming differences)
+        label_cols = getattr(cfg, 'RESOLVED_LABEL_COLUMNS', cfg.LABEL_COLUMNS)
+        for i, col in enumerate(label_cols, 1):
             logger.info(f"Trening poziomu {i}/{len(cfg.LABEL_COLUMNS)}: {col}")
             # Optional class weights to handle class imbalance (0=LONG,1=SHORT,2=NEUTRAL)
             if getattr(cfg, 'ENABLE_CLASS_WEIGHTS_IN_TRAINING', False):
@@ -43,9 +45,9 @@ class MultiOutputXGB:
                 ytr = y_train[col].values
                 yva = y_val[col].values
                 wtr = [float(weights_map.get(int(lbl), 1.0)) for lbl in ytr]
-                wva = [float(weights_map.get(int(lbl), 1.0)) for lbl in yva]
+                # Apply weights ONLY on training set (align with training3 behavior). Validation without weights.
                 dtrain = xgb.DMatrix(X_train, label=ytr, weight=wtr, feature_names=self.feature_names)
-                dval = xgb.DMatrix(X_val, label=yva, weight=wva, feature_names=self.feature_names)
+                dval = xgb.DMatrix(X_val, label=yva, feature_names=self.feature_names)
             else:
                 dtrain = xgb.DMatrix(X_train, label=y_train[col], feature_names=self.feature_names)
                 dval = xgb.DMatrix(X_val, label=y_val[col], feature_names=self.feature_names)
@@ -63,7 +65,8 @@ class MultiOutputXGB:
         preds = {}
         self.probas_ = {}
         dtest = xgb.DMatrix(X, feature_names=self.feature_names)
-        for i, col in enumerate(cfg.LABEL_COLUMNS):
+        label_cols = getattr(cfg, 'RESOLVED_LABEL_COLUMNS', cfg.LABEL_COLUMNS)
+        for i, col in enumerate(label_cols):
             proba = self.models[i].predict(dtest)
             self.probas_[col] = proba
             preds[col] = np.argmax(proba, axis=1)

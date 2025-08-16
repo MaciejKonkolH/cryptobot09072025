@@ -15,7 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from training5 import config as cfg
 from training5.utils import setup_logging
 from training5.data_loader import load_labeled, split_scale
-from training5.report import save_markdown_report
+from training5.report import save_markdown_report, save_json_report
 
 
 def load_models(feature_names):
@@ -117,7 +117,7 @@ def run(symbol: str, args=None):
 
     # Build metrics
     from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-    thresholds = [0.3, 0.4, 0.5, 0.6]
+    thresholds = [0.3, 0.4, 0.45, 0.5]
     metrics = {}
     for level_idx, col in enumerate(cfg.LABEL_COLUMNS):
         y_true_c = y_test[col]
@@ -178,6 +178,7 @@ def run(symbol: str, args=None):
     }
     data_info = {
         'n_features': len(feat_names),
+        'feature_names': list(feat_names),
         'n_train': len(X_train),
         'n_val': len(X_val),
         'n_test': len(X_test),
@@ -195,6 +196,7 @@ def run(symbol: str, args=None):
         }
 
     save_markdown_report(evaluation_results, model_params, data_info, cfg, symbol)
+    save_json_report(evaluation_results, model_params, data_info, cfg, symbol)
 
     # Optional: save trades JSON for a single specified TP/SL and confidence threshold
     if args is not None and getattr(args, 'save_trades', False):

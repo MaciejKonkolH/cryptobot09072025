@@ -5,8 +5,8 @@ import logging
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MODULE_DIR = PROJECT_ROOT / "labeler5"
 
-# Input from feature_calculator3
-INPUT_DIR = PROJECT_ROOT / "feature_calculator3" / "output"
+# Input from feature_calculator_4
+INPUT_DIR = PROJECT_ROOT / "feature_calculator_4" / "output"
 INPUT_TEMPLATE = "features_{symbol}.feather"
 
 # Output
