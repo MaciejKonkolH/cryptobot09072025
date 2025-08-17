@@ -18,7 +18,11 @@ LOG_DIR = MODULE_DIR / "logs"
 DEFAULT_SYMBOL = "BTCUSDT"
 
 # Channel windows (minutes)
+# Base set aligned to current pipeline
 CHANNEL_WINDOWS = [240, 180, 120]
+# Optional extended windows prepared for experiments (keep disabled by default)
+ENABLE_EXTENDED_CHANNELS = False
+EXTENDED_CHANNEL_WINDOWS = [360, 480]
 
 # OB EMA lengths for persistence
 IMB_EMA_LENS = [5, 10]
@@ -68,4 +72,12 @@ BID_LEVELS = [-5, -4, -3, -2, -1]
 ASK_LEVELS = [1, 2, 3, 4, 5]
 PRESSURE_WINDOW = 10
 MIN_SPREAD_THRESHOLD = 0.0001
+
+# Winsorization (optional; applied in main after feature computation, before fillna)
+WINSORIZE_ENABLED = False
+# Quantiles expressed as fractions (e.g., 0.005 = 0.5%, 0.995 = 99.5%)
+WINSORIZE_FEATURES = {
+    # Prepare for outlier control; can be toggled on when testing ETH/XRP
+    "OBV_slope_over_ATR": (0.005, 0.995),
+}
 

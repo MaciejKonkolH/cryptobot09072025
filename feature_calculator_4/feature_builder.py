@@ -334,7 +334,10 @@ def compute_features(df: pd.DataFrame, progress: bool = False) -> pd.DataFrame:
     frames: List[pd.DataFrame] = []
 
     # Channel features
-    for w in cfg.CHANNEL_WINDOWS:
+    channel_windows = list(cfg.CHANNEL_WINDOWS)
+    if getattr(cfg, "ENABLE_EXTENDED_CHANNELS", False):
+        channel_windows = sorted(set(channel_windows + list(getattr(cfg, "EXTENDED_CHANNEL_WINDOWS", []))), reverse=False)
+    for w in channel_windows:
         frames.append(_channel_metrics(df, w, progress=progress))
 
     # OHLC-based technical features
@@ -351,7 +354,7 @@ def compute_features(df: pd.DataFrame, progress: bool = False) -> pd.DataFrame:
 
     # Interactions: channel × OB imbalance
     if "imbalance_1pct_notional" in out.columns:
-        for w in cfg.CHANNEL_WINDOWS:
+        for w in channel_windows:
             pos_col = f"pos_in_channel_{w}"
             slope_col = f"slope_over_ATR_window_{w}"
             width_col = f"width_over_ATR_{w}"

@@ -62,6 +62,14 @@ def run(symbol: str):
     raw_cols = [c for c in ["open", "high", "low", "close", "volume"] if c in df.columns]
     if raw_cols:
         feat = feat.join(df[raw_cols].iloc[240:], how="left")
+    # Optional winsorization before fillna
+    if getattr(cfg, "WINSORIZE_ENABLED", False):
+        for col, (qlo, qhi) in getattr(cfg, "WINSORIZE_FEATURES", {}).items():
+            if col in feat.columns:
+                lo = feat[col].quantile(qlo)
+                hi = feat[col].quantile(qhi)
+                feat[col] = feat[col].clip(lower=lo, upper=hi)
+
     feat = feat.replace([float('inf'), float('-inf')], pd.NA).fillna(0.0)
     logger.info(f"Final: {len(feat):,} wierszy, {len(feat.columns)} kolumn")
 
