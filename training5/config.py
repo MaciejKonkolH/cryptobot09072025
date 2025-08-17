@@ -23,8 +23,8 @@ DEFAULT_SYMBOL = "BTCUSDT"
 # Label columns: build from TP/SL (match labeler5)
 TP_SL_LEVELS = [
     (0.6, 0.2), (0.6, 0.3), (0.8, 0.2), (0.8, 0.3), (0.8, 0.4),
-    #(1.0, 0.3), (1.0, 0.4), (1.0, 0.5), (1.2, 0.4), (1.2, 0.5), (1.2, 0.6),
-    #(1.4, 0.4), (1.4, 0.5), (1.4, 0.6), (1.4, 0.7),
+    (1.0, 0.3), (1.0, 0.4), (1.0, 0.5), (1.2, 0.4), (1.2, 0.5), (1.2, 0.6),
+    (1.4, 0.4), (1.4, 0.5), (1.4, 0.6), (1.4, 0.7),
 ]
 
 def label_col(tp, sl):
@@ -88,7 +88,7 @@ CLASS_WEIGHTS = {
 # - 't3_37'       -> use training3 37-feature whitelist when available
 # - 'custom'      -> use intersection of CUSTOM_FEATURE_LIST with available features (warn on missing)
 # - 'custom_strict' -> use EXACTLY CUSTOM_FEATURE_LIST and FAIL if any listed feature is missing
-FEATURE_SELECTION_MODE = 'custom_strict'
+FEATURE_SELECTION_MODE = 'all'
 
 # Backward-compat flag
 USE_TRAINING3_FEATURE_WHITELIST = False

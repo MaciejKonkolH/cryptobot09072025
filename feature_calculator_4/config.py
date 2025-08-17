@@ -21,7 +21,7 @@ DEFAULT_SYMBOL = "BTCUSDT"
 # Base set aligned to current pipeline
 CHANNEL_WINDOWS = [240, 180, 120]
 # Optional extended windows prepared for experiments (keep disabled by default)
-ENABLE_EXTENDED_CHANNELS = False
+ENABLE_EXTENDED_CHANNELS = True
 EXTENDED_CHANNEL_WINDOWS = [360, 480]
 
 # OB EMA lengths for persistence

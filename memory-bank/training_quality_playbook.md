@@ -68,6 +68,25 @@ Cel: skondensowane, praktyczne notatki oraz procedury, które pomagają budować
 Notujmy tu kolejne obserwacje i rezultaty eksperymentów. Celem jest stabilna, wysoka precyzja przy rozsądnym pokryciu i dodatnim oczekiwanym zysku.
 
 
+### 13) Nowe fakty i status po rozszerzeniu kanałów (2025-08-17)
+- Rozszerzyliśmy zestaw cech o kanały 360/480 w kalkulatorze cech; finalnie pliki feater mają 123 kolumny.
+- Etykietowanie skorygowane do 15 poziomów zgodnych z `labeler5` (usunięto pomyłkowe 0.7/0.2 z konfiguracji treningu).
+- Interakcje kanał×imbalance pozostaną do ewaluacji w trybie „all”, ale docelowo będą podlegały pruningowi według FI/diagnostyki.
+- `OBV_slope_over_ATR`: pozostaje wyłączona w treningu; przygotowana opcja winsoryzacji p0.5–p99.5 per para (jeszcze nieaktywna).
+
+### 14) Strategia selekcji cech – „all → prune”
+- Przełączamy trening na `FEATURE_SELECTION_MODE='all'` dla szerokiej bazy cech (w tym kanały 360/480).
+- Po treningu: agregujemy FI per poziom (median/mean), flagujemy cechy near-constancy i z problematycznymi ogonami.
+- Pruning: odcinamy 20–30% najsłabszych cech i retestujemy mlogloss oraz Accuracy SHORT+LONG @ 0.4/0.45/0.5 i coverage.
+- Po stabilizacji: zamrażamy listy per-para (`custom_strict`), aby uzyskać powtarzalność i łatwość wdrożenia do bota.
+
+### 15) Minimalny plan eksperymentów – kolejność
+1) Trening w trybie „all” (BTC/ETH/XRP) + raport FI i analiza kanałów 120/180/240 vs 360/480 względem etykiet.
+2) Pruning wg FI/diagnostyki → retest.
+3) Winsoryzacja `OBV_slope_over_ATR` (A/B) dla ETH/XRP jeśli potrzeba.
+4) Post-decisions (t, Δ, m) dla podniesienia precyzji.
+5) Regulacja wag LONG/SHORT jeśli recall zbyt niski.
+
 ### 8) Zmiany wdrożone w kodzie i raportowaniu (2025-08-17)
 - Ujednolicone progi pewności w raportach (Markdown/JSON): 0.30, 0.40, 0.45, 0.50.
 - Naprawiona metryka "Accuracy SHORT+LONG (ważona)" – ignoruje klasy z 0 predykcji.
@@ -108,7 +127,7 @@ Notujmy tu kolejne obserwacje i rezultaty eksperymentów. Celem jest stabilna, w
 - [ ] Winsoryzacja `OBV_slope_over_ATR` (globalnie) – test A/B (ETH, XRP).  
       Stan: tymczasowo cecha wyłączona; eksperyment winsoryzacji do wykonania.
 - [ ] Reguły po-treningowe (t, Δ, m) – wersja 1 (ocena precyzji vs coverage).
-- [ ] Dłuższe kanały (360/480) – wariant cech dla ETH/XRP i porównanie.
+- [x] Dłuższe kanały (360/480) – cechy obliczone dla BTC/ETH/XRP; do porównania wpływ na metryki.
 - [ ] Wagi klas LONG/SHORT – lekkie podniesienie i ocena.
 - [ ] Analiza FI i per-para selekcja cech (`custom_strict` różne listy).
 - [ ] Per-para poziomy TP/SL – wybór stabilnych poziomów.
