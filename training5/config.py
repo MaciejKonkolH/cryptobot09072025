@@ -88,34 +88,46 @@ CLASS_WEIGHTS = {
 # - 't3_37'       -> use training3 37-feature whitelist when available
 # - 'custom'      -> use intersection of CUSTOM_FEATURE_LIST with available features (warn on missing)
 # - 'custom_strict' -> use EXACTLY CUSTOM_FEATURE_LIST and FAIL if any listed feature is missing
-FEATURE_SELECTION_MODE = 'all'
+FEATURE_SELECTION_MODE = 'custom_strict'
 
 # Backward-compat flag
 USE_TRAINING3_FEATURE_WHITELIST = False
 
 # Optional custom feature list (used if FEATURE_SELECTION_MODE in {'custom','custom_strict'})
 CUSTOM_FEATURE_LIST = [
-    # training3 core (37)
-    'price_trend_30m', 'price_trend_2h', 'price_trend_6h',
-    'price_strength', 'price_consistency_score',
-    'price_vs_ma_60', 'price_vs_ma_240', 'ma_trend', 'price_volatility_rolling',
-    'volume_trend_1h', 'volume_intensity', 'volume_volatility_rolling', 'volume_price_correlation', 'volume_momentum',
+    # Price/volatility/regime core
+    'price_trend_2h', 'price_trend_6h', 'price_strength', 'price_consistency_score',
+    'price_vs_ma_240', 'close_vs_ema_120', 'close_vs_ema_60', 'slope_ema_60_over_ATR',
+    'slope_return_120', 'r2_trend_120',
+    'price_volatility_rolling', 'vol_regime_120', 'vol_of_vol_120',
+    'volatility_momentum', 'volatility_percentile', 'volatility_term_structure', 'volatility_persistence', 'volatility_of_volatility',
+
+    # TA bands/channels (non-orderbook)
+    'bb_pos_20', 'bb_width_over_ATR_20',
+    'donch_pos_60', 'donch_width_over_ATR_60',
+
+    # Orderbook microstructure (clean subset)
     'spread_tightness', 'depth_ratio_s1', 'depth_ratio_s2', 'depth_momentum',
-    'market_trend_strength', 'market_trend_direction', 'bollinger_band_width', 'market_regime',
-    'volatility_regime', 'volatility_percentile', 'volatility_persistence', 'volatility_momentum', 'volatility_of_volatility', 'volatility_term_structure',
-    'volume_imbalance', 'weighted_volume_imbalance', 'volume_imbalance_trend',
-    'price_pressure', 'weighted_price_pressure', 'price_pressure_momentum', 'order_flow_imbalance', 'order_flow_trend',
+    'side_skew', 'pressure_12', 'pressure_12_norm',
+    'volume_imbalance', 'price_pressure', 'weighted_price_pressure',
+    'persistence_imbalance_1pct_ema5', 'persistence_imbalance_1pct_ema10',
 
-    # channel features (12)
-    'pos_in_channel_240', 'pos_in_channel_180', 'pos_in_channel_120',
-    'width_over_ATR_240', 'width_over_ATR_180', 'width_over_ATR_120',
-    'slope_over_ATR_window_240', 'slope_over_ATR_window_180', 'slope_over_ATR_window_120',
-    'channel_fit_score_240', 'channel_fit_score_180', 'channel_fit_score_120',
+    # Market regime / trend
+    'market_trend_strength', 'market_trend_direction', 'market_regime',
 
-    # additions (targeted): channel×OB interactions (240), BB position, EMA position/slope, OBV slope
-    'bb_pos_20',
-    'close_vs_ema_120',
-    'slope_ema_60_over_ATR',
+    # Channel features – base (include 120/180/240/360/480)
+    'pos_in_channel_120', 'pos_in_channel_180', 'pos_in_channel_240', 'pos_in_channel_360', 'pos_in_channel_480',
+    'width_over_ATR_120', 'width_over_ATR_180', 'width_over_ATR_240', 'width_over_ATR_360', 'width_over_ATR_480',
+    'slope_over_ATR_window_120', 'slope_over_ATR_window_180', 'slope_over_ATR_window_240', 'slope_over_ATR_window_360', 'slope_over_ATR_window_480',
+    'channel_fit_score_120', 'channel_fit_score_180', 'channel_fit_score_240', 'channel_fit_score_360', 'channel_fit_score_480',
+
+    # Channel × imbalance (reduced; keep only width/slope in larger windows)
+    'slope_over_ATR_window_240_x_imbalance_1pct',
+    'slope_over_ATR_window_360_x_imbalance_1pct',
+    'slope_over_ATR_window_480_x_imbalance_1pct',
+    'width_over_ATR_240_x_imbalance_1pct',
+    'width_over_ATR_360_x_imbalance_1pct',
+    'width_over_ATR_480_x_imbalance_1pct',
 ]
 
 # Proposed extended feature set to experiment with (training3 whitelist + TA + microstructure + channels)
