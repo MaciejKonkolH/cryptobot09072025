@@ -31,12 +31,15 @@ def run(symbol: str):
     X_train, X_val, X_test, y_train, y_val, y_test, scaler, feat_names = split_scale(df)
     logger.info(f"Train/Val/Test: {len(X_train):,}/{len(X_val):,}/{len(X_test):,}")
 
-    # Log and persist the exact feature list used for training
+    # Create per-run output directory under reports/{symbol}/run_{timestamp}
+    run_ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    run_dir = cfg.get_report_dir(symbol) / f"run_{run_ts}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    # Log and persist the exact feature list used for training (into run_dir)
     try:
         logger.info(f"Features used ({len(feat_names)}): {', '.join(feat_names)}")
-        rep_dir = cfg.get_report_dir(symbol)
-        ts_now = datetime.now().strftime('%Y%m%d_%H%M%S')
-        fpath = rep_dir / f"features_used_{symbol}_{ts_now}.txt"
+        fpath = run_dir / f"features_used_{symbol}_{run_ts}.txt"
         with open(fpath, 'w', encoding='utf-8') as f:
             for name in feat_names:
                 f.write(f"{name}\n")
@@ -134,22 +137,13 @@ def run(symbol: str):
         logger = setup_logging()
         logger.error(f"Failed to save metadata.json: {e}")
 
-    # Save metrics JSON
-    rep_dir = cfg.get_report_dir(symbol)
-    with open(rep_dir / f"metrics_{symbol}.json", "w", encoding="utf-8") as f:
+    # Save metrics JSON into run_dir
+    with open(run_dir / f"metrics_{symbol}.json", "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
 
-    # Save predictions CSV (thresholded, easy-to-read format)
-    idx = cfg.CSV_PREDICTIONS_MODEL_INDEX
+    # Save predictions CSVs for ALL levels into run_dir (both full and trades-only)
     level_cols = getattr(cfg, 'RESOLVED_LABEL_COLUMNS', cfg.LABEL_COLUMNS)
-    level_col = level_cols[idx]
-    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-    proba = model.probas_[level_col]  # shape (n,3) -> [LONG, SHORT, NEUTRAL]
-    idx_ts = X_test.index
-    maxp = np.max(proba, axis=1)
-    pred_class = np.argmax(proba, axis=1)
-    # Threshold 0.5 for consistency with strategy/backtest signals
-    thr = 0.5
+    timestamp_str = run_ts
 
     def _to_pair_str(sym: str) -> str:
         if sym.upper().endswith("USDT"):
@@ -158,27 +152,21 @@ def run(symbol: str):
         return sym
 
     pair_str = _to_pair_str(symbol)
-    rows = []
-    trade_rows = []  # only LONG/SHORT, no NEUTRAL, with correctness
-    for i in range(proba.shape[0]):
-        if maxp[i] >= thr and pred_class[i] in (0, 1):
-            signal = 'long' if pred_class[i] == 0 else 'short'
-        else:
-            signal = 'neutral'
-        rows.append({
-            'timestamp': str(idx_ts[i]),
-            'pair': pair_str,
-            'signal': signal,
-            'confidence': float(maxp[i]),
-            'prob_SHORT': float(proba[i, 1]),
-            'prob_LONG': float(proba[i, 0]),
-            'prob_NEUTRAL': float(proba[i, 2]),
-        })
-        # Trades-only file with correctness info
-        if signal != 'neutral':
-            true_cls = int(y_test[level_col].iloc[i])
-            is_correct = int(pred_class[i]) == true_cls
-            trade_rows.append({
+    thr = 0.5  # default signal threshold
+    for level_col in level_cols:
+        proba = model.probas_[level_col]
+        idx_ts = X_test.index
+        maxp = np.max(proba, axis=1)
+        pred_class = np.argmax(proba, axis=1)
+
+        rows = []
+        trade_rows = []
+        for i in range(proba.shape[0]):
+            if maxp[i] >= thr and pred_class[i] in (0, 1):
+                signal = 'long' if pred_class[i] == 0 else 'short'
+            else:
+                signal = 'neutral'
+            rows.append({
                 'timestamp': str(idx_ts[i]),
                 'pair': pair_str,
                 'signal': signal,
@@ -186,20 +174,30 @@ def run(symbol: str):
                 'prob_SHORT': float(proba[i, 1]),
                 'prob_LONG': float(proba[i, 0]),
                 'prob_NEUTRAL': float(proba[i, 2]),
-                'true_label': ['LONG', 'SHORT', 'NEUTRAL'][true_cls],
-                'correct': bool(is_correct),
-                'result': 'WIN' if is_correct else 'LOSS',
             })
+            if signal != 'neutral':
+                true_cls = int(y_test[level_col].iloc[i])
+                is_correct = int(pred_class[i]) == true_cls
+                trade_rows.append({
+                    'timestamp': str(idx_ts[i]),
+                    'pair': pair_str,
+                    'signal': signal,
+                    'confidence': float(maxp[i]),
+                    'prob_SHORT': float(proba[i, 1]),
+                    'prob_LONG': float(proba[i, 0]),
+                    'prob_NEUTRAL': float(proba[i, 2]),
+                    'true_label': ['LONG', 'SHORT', 'NEUTRAL'][true_cls],
+                    'correct': bool(is_correct),
+                    'result': 'WIN' if is_correct else 'LOSS',
+                })
 
-    pred_out = pd.DataFrame(rows)
-    pred_csv = rep_dir / f"predictions_{symbol}_{level_col}_{timestamp_str}.csv"
-    pred_out.to_csv(pred_csv, index=False)
-
-    # Save trades-only CSV (LONG/SHORT predictions, no NEUTRAL) with correctness
-    if trade_rows:
-        trades_out = pd.DataFrame(trade_rows)
-        trades_csv = rep_dir / f"predictions_trades_{symbol}_{level_col}_{timestamp_str}.csv"
-        trades_out.to_csv(trades_csv, index=False)
+        pred_out = pd.DataFrame(rows)
+        pred_csv = run_dir / f"predictions_{symbol}_{level_col}_{timestamp_str}.csv"
+        pred_out.to_csv(pred_csv, index=False)
+        if trade_rows:
+            trades_out = pd.DataFrame(trade_rows)
+            trades_csv = run_dir / f"predictions_trades_{symbol}_{level_col}_{timestamp_str}.csv"
+            trades_out.to_csv(trades_csv, index=False)
 
     # Feature importance CSV (aggregate gain across models)
     # Handle both index-based keys ('f0', 'f1', ...) and explicit feature-name keys
@@ -223,7 +221,7 @@ def run(symbol: str):
         feat_importance = feat_importance / total_gain
     fi_df = pd.DataFrame({'feature': feat_names, 'importance': feat_importance})
     fi_df = fi_df.sort_values('importance', ascending=False)
-    fi_csv = rep_dir / f"feature_importance_{timestamp_str}.csv"
+    fi_csv = run_dir / f"feature_importance_{timestamp_str}.csv"
     fi_df.to_csv(fi_csv, index=False, float_format='%.10f')
 
     logger.info("training5 done")
@@ -265,9 +263,9 @@ def run(symbol: str):
         pass
 
     # Save unified markdown and JSON reports
-    save_markdown_report(evaluation_results, model_params, data_info, cfg, symbol)
+    save_markdown_report(evaluation_results, model_params, data_info, cfg, symbol, out_dir=run_dir)
     from training5.report import save_json_report
-    save_json_report(evaluation_results, model_params, data_info, cfg, symbol)
+    save_json_report(evaluation_results, model_params, data_info, cfg, symbol, out_dir=run_dir)
 
 
 def main():

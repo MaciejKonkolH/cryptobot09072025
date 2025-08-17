@@ -74,9 +74,9 @@ def _calc_combined_profit_from_cm(cm, tp: float, sl: float) -> float:
     return (p_long * col_long + p_short * col_short) / (col_long + col_short)
 
 
-def save_markdown_report(evaluation_results: dict, model_params: dict, data_info: dict, cfg, symbol: str) -> Path:
+def save_markdown_report(evaluation_results: dict, model_params: dict, data_info: dict, cfg, symbol: str, out_dir: Path | None = None) -> Path:
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    rep_dir = cfg.get_report_dir(symbol)
+    rep_dir = out_dir if out_dir is not None else cfg.get_report_dir(symbol)
     out = rep_dir / f"results_{symbol}_{ts}.md"
 
     with open(out, 'w', encoding='utf-8') as f:
@@ -227,13 +227,13 @@ def save_markdown_report(evaluation_results: dict, model_params: dict, data_info
     return out
 
 
-def save_json_report(evaluation_results: dict, model_params: dict, data_info: dict, cfg, symbol: str) -> Path:
+def save_json_report(evaluation_results: dict, model_params: dict, data_info: dict, cfg, symbol: str, out_dir: Path | None = None) -> Path:
     """Save a unified JSON report mirroring the markdown content structure.
 
     Output path: reports/{symbol}/results_{symbol}_{timestamp}.json
     """
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    rep_dir = cfg.get_report_dir(symbol)
+    rep_dir = out_dir if out_dir is not None else cfg.get_report_dir(symbol)
     out = rep_dir / f"results_{symbol}_{ts}.json"
 
     payload = {
