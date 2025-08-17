@@ -13,7 +13,8 @@ DOWNLOAD3_ROOT: Path = Path(__file__).resolve().parents[1]
 # Symbols / pairs to process (futures)
 PAIRS: List[str] = [
     "BTCUSDT",
-    # "ETHUSDT",
+    "XRPUSDT",
+    "ETHUSDT",
 ]
 
 # Time / data settings

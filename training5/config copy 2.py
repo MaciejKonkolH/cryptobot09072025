@@ -23,8 +23,8 @@ DEFAULT_SYMBOL = "BTCUSDT"
 # Label columns: build from TP/SL (match labeler5)
 TP_SL_LEVELS = [
     (0.6, 0.2), (0.6, 0.3), (0.8, 0.2), (0.8, 0.3), (0.8, 0.4),
-    #(1.0, 0.3), (1.0, 0.4), (1.0, 0.5), (1.2, 0.4), (1.2, 0.5), (1.2, 0.6),
-    #(1.4, 0.4), (1.4, 0.5), (1.4, 0.6), (1.4, 0.7),
+    (1.0, 0.3), (1.0, 0.4), (1.0, 0.5), (1.2, 0.4), (1.2, 0.5), (1.2, 0.6),
+    (1.4, 0.4), (1.4, 0.5), (1.4, 0.6), (1.4, 0.7),
 ]
 
 def label_col(tp, sl):
@@ -37,17 +37,17 @@ VALIDATION_SPLIT = 0.15
 TEST_SPLIT = 0.15
 
 # XGBoost params
-XGB_N_ESTIMATORS = 400
-XGB_LEARNING_RATE = 0.05
-XGB_MAX_DEPTH = 6
-XGB_SUBSAMPLE = 0.8
-XGB_COLSAMPLE_BYTREE = 0.7
-XGB_GAMMA = 0.1
+XGB_N_ESTIMATORS = 700
+XGB_LEARNING_RATE = 0.04
+XGB_MAX_DEPTH = 5
+XGB_SUBSAMPLE = 0.75
+XGB_COLSAMPLE_BYTREE = 0.65
+XGB_GAMMA = 0.25
 XGB_RANDOM_STATE = 42
-XGB_EARLY_STOPPING_ROUNDS = 20
-XGB_REG_ALPHA = 0.0
-XGB_REG_LAMBDA = 0.0
-XGB_MIN_CHILD_WEIGHT = 1
+XGB_EARLY_STOPPING_ROUNDS = 30
+XGB_REG_ALPHA = 0.05
+XGB_REG_LAMBDA = 1.5
+XGB_MIN_CHILD_WEIGHT = 3
 
 # Progress logging
 TRAIN_VERBOSE_EVAL = 50  # print eval metric every N iterations
@@ -113,9 +113,17 @@ CUSTOM_FEATURE_LIST = [
     'channel_fit_score_240', 'channel_fit_score_180', 'channel_fit_score_120',
 
     # additions (targeted): channel×OB interactions (240), BB position, EMA position/slope, OBV slope
+    'pos_in_channel_240_x_imbalance_1pct',
+    'slope_over_ATR_window_240_x_imbalance_1pct',
+    'width_over_ATR_240_x_imbalance_1pct',
+    # extend interactions for 180 window as suggested
+    'pos_in_channel_180_x_imbalance_1pct',
+    'slope_over_ATR_window_180_x_imbalance_1pct',
+    'width_over_ATR_180_x_imbalance_1pct',
     'bb_pos_20',
     'close_vs_ema_120',
     'slope_ema_60_over_ATR',
+    'OBV_slope_over_ATR',
 ]
 
 # Proposed extended feature set to experiment with (training3 whitelist + TA + microstructure + channels)

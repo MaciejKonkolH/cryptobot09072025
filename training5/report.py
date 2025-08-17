@@ -103,6 +103,22 @@ def save_markdown_report(evaluation_results: dict, model_params: dict, data_info
             f.write(f"- {k}: {v}\n")
         f.write("\n")
 
+        # Best validation mlogloss per level (if provided)
+        best_map = data_info.get('best_validation_mlogloss')
+        if isinstance(best_map, dict) and best_map:
+            f.write("## 🔎 NAJLEPSZE WARTOŚCI VALIDATION MLOGLOSS (per poziom)\n")
+            # Expect keys are label columns in order of levels
+            for col, d in best_map.items():
+                try:
+                    lvl_idx = int(evaluation_results.get(col, {}).get('level_index', 0))
+                except Exception:
+                    lvl_idx = 0
+                tp, sl = _get_tp_sl_for_level(cfg, lvl_idx)
+                best_ll = d.get('best_mlogloss')
+                best_it = d.get('best_iteration')
+                f.write(f"- TP={tp:.1f}%, SL={sl:.1f}% [{col}]: best_mlogloss={best_ll} @ iter {best_it}\n")
+            f.write("\n")
+
         # Wyniki per poziom
         f.write("## 📈 WYNIKI DLA KAŻDEGO POZIOMU TP/SL\n\n")
         for col, res in evaluation_results.items():

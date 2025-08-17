@@ -257,6 +257,13 @@ def run(symbol: str):
             'confidence_results': m.get('confidence_results'),
             'level_index': m.get('level_index'),
         }
+    # Attach best validation mlogloss per level (if available)
+    try:
+        if hasattr(model, 'best_scores') and isinstance(model.best_scores, dict):
+            data_info['best_validation_mlogloss'] = model.best_scores
+    except Exception:
+        pass
+
     # Save unified markdown and JSON reports
     save_markdown_report(evaluation_results, model_params, data_info, cfg, symbol)
     from training5.report import save_json_report

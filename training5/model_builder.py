@@ -12,6 +12,9 @@ class MultiOutputXGB:
     def __init__(self, feature_names):
         self.models = []
         self.feature_names = feature_names
+        # Per-level training diagnostics
+        self.training_curves = {}
+        self.best_scores = {}
 
     def _params(self):
         return {
@@ -51,6 +54,8 @@ class MultiOutputXGB:
             else:
                 dtrain = xgb.DMatrix(X_train, label=y_train[col], feature_names=self.feature_names)
                 dval = xgb.DMatrix(X_val, label=y_val[col], feature_names=self.feature_names)
+
+            evals_result = {}
             model = xgb.train(
                 params,
                 dtrain,
@@ -58,8 +63,34 @@ class MultiOutputXGB:
                 evals=[(dval, 'validation')],
                 early_stopping_rounds=cfg.XGB_EARLY_STOPPING_ROUNDS,
                 verbose_eval=cfg.TRAIN_VERBOSE_EVAL,
+                evals_result=evals_result,
             )
             self.models.append(model)
+
+            # Store curves and best metrics
+            self.training_curves[col] = evals_result
+            # Prefer Booster.best_score / best_iteration when available
+            best_score = getattr(model, 'best_score', None)
+            best_iter = getattr(model, 'best_iteration', None)
+            if best_score is None or best_iter is None:
+                try:
+                    val_curve = evals_result.get('validation', {}).get('mlogloss', [])
+                    if val_curve:
+                        best_score = float(min(val_curve))
+                        best_iter = int(val_curve.index(best_score))
+                except Exception:
+                    pass
+            # Fallback to best_ntree_limit if best_iteration missing
+            if best_iter is None:
+                best_iter = getattr(model, 'best_ntree_limit', None)
+            try:
+                logger.info(f"Najlepszy validation-mlogloss ({col}): {best_score} @ iter {best_iter}")
+            except Exception:
+                pass
+            self.best_scores[col] = {
+                'best_mlogloss': float(best_score) if best_score is not None else None,
+                'best_iteration': int(best_iter) if best_iter is not None else None,
+            }
 
     def predict(self, X) -> pd.DataFrame:
         preds = {}
