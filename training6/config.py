@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-MODULE_DIR = PROJECT_ROOT / "training5"
+MODULE_DIR = PROJECT_ROOT / "training6"
 
 # Input from labeler5
 INPUT_DIR = PROJECT_ROOT / "labeler5" / "output"
@@ -34,7 +34,7 @@ LABEL_COLUMNS = [label_col(tp, sl) for tp, sl in TP_SL_LEVELS]
 
 # Splits
 VALIDATION_SPLIT = 0.15
-TEST_SPLIT = 0.15
+TEST_SPLIT = 0.05
 
 # XGBoost params
 XGB_N_ESTIMATORS = 400
@@ -76,10 +76,22 @@ ENABLE_CLASS_WEIGHTS_IN_TRAINING = True
 # Mapping for 3-class labels: 0=LONG, 1=SHORT, 2=NEUTRAL
 # Adjust as needed; defaults put more weight on LONG/SHORT vs NEUTRAL
 CLASS_WEIGHTS = {
-    0: 2.0,  # LONG
-    1: 2.0,  # SHORT
+    0: 1.0,  # LONG
+    1: 1.0,  # SHORT
     2: 1.0,  # NEUTRAL
 }
+
+# Binary (two-model) training configuration
+# Sample weights used when converting 3-class labels into two binary problems
+# LONG model: target=1 for LONG; target=0 for {SHORT (neg), NEUTRAL (neg_low)}
+# SHORT model: target=1 for SHORT; target=0 for {LONG (neg), NEUTRAL (neg_low)}
+BINARY_POSITIVE_WEIGHT = 1.0   # weight for the positive class (LONG in LONG-model, SHORT in SHORT-model)
+BINARY_NEGATIVE_WEIGHT = 1.0   # weight for the opposite direction in the negative class
+BINARY_NEUTRAL_WEIGHT  = 0.1   # small weight for NEUTRAL in the negative class
+
+# Decision thresholds for inference
+DECISION_THRESHOLD_LONG = 0.50
+DECISION_THRESHOLD_SHORT = 0.50
 
 
 # Feature selection options

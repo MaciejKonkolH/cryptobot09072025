@@ -73,12 +73,14 @@ Notujmy tu kolejne obserwacje i rezultaty eksperymentów. Celem jest stabilna, w
 - Etykietowanie skorygowane do 15 poziomów zgodnych z `labeler5` (usunięto pomyłkowe 0.7/0.2 z konfiguracji treningu).
 - Interakcje kanał×imbalance pozostaną do ewaluacji w trybie „all”, ale docelowo będą podlegały pruningowi według FI/diagnostyki.
 - `OBV_slope_over_ATR`: pozostaje wyłączona w treningu; przygotowana opcja winsoryzacji p0.5–p99.5 per para (jeszcze nieaktywna).
+- Trening w trybie `all` wykonany dla BTC/ETH/XRP; zebrane raporty FI i wyniki per-poziom.
 
 ### 14) Strategia selekcji cech – „all → prune”
 - Przełączamy trening na `FEATURE_SELECTION_MODE='all'` dla szerokiej bazy cech (w tym kanały 360/480).
 - Po treningu: agregujemy FI per poziom (median/mean), flagujemy cechy near-constancy i z problematycznymi ogonami.
 - Pruning: odcinamy 20–30% najsłabszych cech i retestujemy mlogloss oraz Accuracy SHORT+LONG @ 0.4/0.45/0.5 i coverage.
 - Po stabilizacji: zamrażamy listy per-para (`custom_strict`), aby uzyskać powtarzalność i łatwość wdrożenia do bota.
+  - Status: agregacja FI (pierwsze przejście) wykonana; selekcja/pruning do zrobienia.
 
 ### 15) Minimalny plan eksperymentów – kolejność
 1) Trening w trybie „all” (BTC/ETH/XRP) + raport FI i analiza kanałów 120/180/240 vs 360/480 względem etykiet.
@@ -86,6 +88,13 @@ Notujmy tu kolejne obserwacje i rezultaty eksperymentów. Celem jest stabilna, w
 3) Winsoryzacja `OBV_slope_over_ATR` (A/B) dla ETH/XRP jeśli potrzeba.
 4) Post-decisions (t, Δ, m) dla podniesienia precyzji.
 5) Regulacja wag LONG/SHORT jeśli recall zbyt niski.
+
+### 16) Definicje i obserwacje metryczne (2025-08-17)
+- Coverage: odsetek próbek dopuszczonych do decyzji po zastosowaniu progu pewności i innych filtrów (w raporcie: `n_high_conf/n_total` dla progu t; w tradingu interesuje nas coverage dla LONG/SHORT, nie NEUTRAL).
+- Mlogloss a rozkład etykiet: przy dominacji NEUTRAL mlogloss może wyglądać dobrze mimo słabej jakości sygnałów LONG/SHORT, bo łatwo trafić klasę dominującą. Dlatego oceniamy także precision/recall LONG/SHORT przy progach i coverage transakcyjne.
+- Separacja na poziomach: na XRP wyższe TP (np. 1.2/1.4) częściej dają niższy mlogloss (lepszą separację) niż niskie TP (np. 0.6/0.3), gdzie wynik bywa bliski losowemu (iter=0).
+- Spójność FI: ranking ważności stabilnie faworyzuje zmienność/regime, price_vs_ma/EMA oraz kanały (width/slope, także 360/480) – wzorce istnieją, ale sygnały LONG/SHORT bywają wciągane przez klasę NEUTRAL.
+- Kandydaci do pruningu (pierwsza tura): `market_choppiness` (0), słabe log_ratio/COM/dA1/dB1/dImb1/flow_imbalance, `price_pressure_momentum`, część TA (RSI/Stoch/MACD z najniższą FI), nadmiar interakcji `pos_in_channel_*_x_imbalance` i słabsze okna interakcji; preferować width/slope×imbalance w oknach 240/360/480.
 
 ### 8) Zmiany wdrożone w kodzie i raportowaniu (2025-08-17)
 - Ujednolicone progi pewności w raportach (Markdown/JSON): 0.30, 0.40, 0.45, 0.50.
@@ -129,5 +138,6 @@ Notujmy tu kolejne obserwacje i rezultaty eksperymentów. Celem jest stabilna, w
 - [ ] Reguły po-treningowe (t, Δ, m) – wersja 1 (ocena precyzji vs coverage).
 - [x] Dłuższe kanały (360/480) – cechy obliczone dla BTC/ETH/XRP; do porównania wpływ na metryki.
 - [ ] Wagi klas LONG/SHORT – lekkie podniesienie i ocena.
-- [ ] Analiza FI i per-para selekcja cech (`custom_strict` różne listy).
+- [ ] Analiza FI i per-para selekcja cech (`custom_strict` różne listy).  
+      Status: analiza FI – wykonana (pierwsza iteracja); selekcja/pruning – do zrobienia.
 - [ ] Per-para poziomy TP/SL – wybór stabilnych poziomów.

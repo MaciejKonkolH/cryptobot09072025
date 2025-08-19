@@ -1,0 +1,34 @@
+from pathlib import Path
+import logging
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+MODULE_DIR = PROJECT_ROOT / "dual_labeler"
+
+# Input from feature_calculator_4 (same layout as labeler5)
+INPUT_DIR = PROJECT_ROOT / "feature_calculator_4" / "output"
+INPUT_TEMPLATE = "features_{symbol}.feather"
+
+# Output
+OUTPUT_DIR = MODULE_DIR / "output"
+LOG_DIR = MODULE_DIR / "logs"
+METADATA_DIR = MODULE_DIR / "metadata"
+
+# Symbols
+DEFAULT_SYMBOL = "BTCUSDT"
+
+# Symmetric TP/SL levels (percent), 1:1 ratio — we label by which boundary hits first
+TP_LEVELS = [
+    0.6, 0.8, 1.0, 1.2, 1.4, 1.7, 2.0, 2.5, 3.0,
+]
+
+# Logging
+LOG_LEVEL = logging.INFO
+LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+
+
+def ensure_dirs():
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    METADATA_DIR.mkdir(parents=True, exist_ok=True)
+

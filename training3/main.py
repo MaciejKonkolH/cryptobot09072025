@@ -21,8 +21,6 @@ from sklearn.metrics import classification_report, confusion_matrix, accuracy_sc
 # Importy z naszego modułu
 from training3 import config as cfg
 from training3.utils import setup_logging, save_training_results_to_markdown
-from training5.report import save_markdown_report as save_markdown_report_t5
-from training5.report import save_json_report as save_json_report_t5
 from training3.data_loader import DataLoader
 from training3.model_builder import MultiOutputXGBoost
 
@@ -125,26 +123,23 @@ class Trainer:
         for i, label_col in enumerate(cfg.LABEL_COLUMNS):
             level_desc = cfg.TP_SL_LEVELS_DESC[i]
             
-            if cfg.EVAL_LOG_TO_CONSOLE:
-                logger.info(f"\n--- Ewaluacja dla poziomu: {level_desc} ---")
+            logger.info(f"\n--- Ewaluacja dla poziomu: {level_desc} ---")
             
             # Prawdopodobieństwa dla tego poziomu
             probas = y_test_proba[label_col]  # [n_samples, 3]
             
             # Analiza z różnymi progami pewności
-            confidence_thresholds = [0.3, 0.4, 0.45, 0.5]
+            confidence_thresholds = [0.3, 0.4, 0.5, 0.6]
             
             for threshold in confidence_thresholds:
-                if cfg.EVAL_LOG_TO_CONSOLE:
-                    logger.info(f"\n  Progi pewności {threshold*100}%:")
+                logger.info(f"\n  Progi pewności {threshold*100}%:")
                 
                 # Znajdź próbki z wysoką pewnością
                 max_probas = np.max(probas, axis=1)
                 high_conf_mask = max_probas >= threshold
                 
                 if np.sum(high_conf_mask) == 0:
-                    if cfg.EVAL_LOG_TO_CONSOLE:
-                        logger.info(f"    Brak próbek z pewnością >= {threshold*100}%")
+                    logger.info(f"    Brak próbek z pewnością >= {threshold*100}%")
                     continue
                 
                 # Predykcje tylko dla próbek z wysoką pewnością
@@ -170,12 +165,11 @@ class Trainer:
                     labels=[0, 1, 2]  # LONG, SHORT, NEUTRAL
                 )
                 
-                if cfg.EVAL_LOG_TO_CONSOLE:
-                    logger.info(f"    Próbki z wysoką pewnością: {np.sum(high_conf_mask):,}/{len(probas):,} ({np.sum(high_conf_mask)/len(probas)*100:.1f}%)")
-                    logger.info(f"    Accuracy: {accuracy:.4f}")
-                    logger.info(f"    LONG: P={class_report['LONG']['precision']:.3f}, R={class_report['LONG']['recall']:.3f}, F1={class_report['LONG']['f1-score']:.3f}")
-                    logger.info(f"    SHORT: P={class_report['SHORT']['precision']:.3f}, R={class_report['SHORT']['recall']:.3f}, F1={class_report['SHORT']['f1-score']:.3f}")
-                    logger.info(f"    NEUTRAL: P={class_report['NEUTRAL']['precision']:.3f}, R={class_report['NEUTRAL']['recall']:.3f}, F1={class_report['NEUTRAL']['f1-score']:.3f}")
+                logger.info(f"    Próbki z wysoką pewnością: {np.sum(high_conf_mask):,}/{len(probas):,} ({np.sum(high_conf_mask)/len(probas)*100:.1f}%)")
+                logger.info(f"    Accuracy: {accuracy:.4f}")
+                logger.info(f"    LONG: P={class_report['LONG']['precision']:.3f}, R={class_report['LONG']['recall']:.3f}, F1={class_report['LONG']['f1-score']:.3f}")
+                logger.info(f"    SHORT: P={class_report['SHORT']['precision']:.3f}, R={class_report['SHORT']['recall']:.3f}, F1={class_report['SHORT']['f1-score']:.3f}")
+                logger.info(f"    NEUTRAL: P={class_report['NEUTRAL']['precision']:.3f}, R={class_report['NEUTRAL']['recall']:.3f}, F1={class_report['NEUTRAL']['f1-score']:.3f}")
             
             # Standardowe metryki (bez progów)
             accuracy = accuracy_score(y_test[label_col], y_test_pred[label_col])
@@ -253,16 +247,14 @@ class Trainer:
                 'y_true': y_test[label_col],
                 'y_pred': y_test_pred[label_col],
                 'probabilities': probas,
-                'confidence_results': confidence_results,
-                'level_index': i
+                'confidence_results': confidence_results
             }
             
-            if cfg.EVAL_LOG_TO_CONSOLE:
-                logger.info(f"\n  Standardowe metryki (bez progów):")
-                logger.info(f"    Accuracy: {accuracy:.4f}")
-                logger.info(f"    LONG: P={class_report['LONG']['precision']:.3f}, R={class_report['LONG']['recall']:.3f}, F1={class_report['LONG']['f1-score']:.3f}")
-                logger.info(f"    SHORT: P={class_report['SHORT']['precision']:.3f}, R={class_report['SHORT']['recall']:.3f}, F1={class_report['SHORT']['f1-score']:.3f}")
-                logger.info(f"    NEUTRAL: P={class_report['NEUTRAL']['precision']:.3f}, R={class_report['NEUTRAL']['recall']:.3f}, F1={class_report['NEUTRAL']['f1-score']:.3f}")
+            logger.info(f"\n  Standardowe metryki (bez progów):")
+            logger.info(f"    Accuracy: {accuracy:.4f}")
+            logger.info(f"    LONG: P={class_report['LONG']['precision']:.3f}, R={class_report['LONG']['recall']:.3f}, F1={class_report['LONG']['f1-score']:.3f}")
+            logger.info(f"    SHORT: P={class_report['SHORT']['precision']:.3f}, R={class_report['SHORT']['recall']:.3f}, F1={class_report['SHORT']['f1-score']:.3f}")
+            logger.info(f"    NEUTRAL: P={class_report['NEUTRAL']['precision']:.3f}, R={class_report['NEUTRAL']['recall']:.3f}, F1={class_report['NEUTRAL']['f1-score']:.3f}")
 
     def _save_test_predictions_to_csv(self, X_test, y_test, y_test_pred, y_test_proba, selected_model_index=None):
         """Zapisuje predykcje testowe do pliku CSV w formacie identycznym jak strategia FreqTrade."""
@@ -507,21 +499,9 @@ class Trainer:
             'test_range': f"{self.data_loader.X_test.index.min()} - {self.data_loader.X_test.index.max()}"
         }
         
-        # Zapisz wyniki do markdown w formacie training5 (ujednolicone raportowanie)
-        try:
-            markdown_path = save_markdown_report_t5(self.evaluation_results, model_params, data_info, cfg, symbol='BTCUSDT')
-            logger.info(f"Wyniki treningu zapisane do markdown (format t5): {markdown_path}")
-        except Exception:
-            # Fallback: oryginalny zapis
-            markdown_path = save_training_results_to_markdown(self.evaluation_results, model_params, data_info, cfg)
-            logger.info(f"Wyniki treningu zapisane do markdown (fallback): {markdown_path}")
-
-        # JSON report (t5-json-1.2)
-        try:
-            json_path = save_json_report_t5(self.evaluation_results, model_params, data_info, cfg, symbol='BTCUSDT')
-            logger.info(f"Wyniki treningu zapisane do JSON: {json_path}")
-        except Exception as e:
-            logger.warning(f"Nie udało się zapisać raportu JSON: {e}")
+        # Zapisz wyniki do markdown
+        markdown_path = save_training_results_to_markdown(self.evaluation_results, model_params, data_info, cfg)
+        logger.info(f"Wyniki treningu zapisane do markdown: {markdown_path}")
 
     def _generate_reports(self):
         """Generuje raporty i wykresy."""
